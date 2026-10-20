@@ -2,6 +2,18 @@
 
 Version **0.11.0**
 
+## New device, in three steps
+
+1. Install Node 18+ and git, then `git clone https://github.com/wenbinio/fleet.git` (private).
+2. Tell any agent (Claude Code, Codex, Grok…): "read AGENTS.md in the fleet folder and set fleet up". It runs
+   `node install.mjs --plan`, applies the safe part, and hands you one short list: sign-ins, the OpenRouter key
+   (hidden prompt), optional sound downloads.
+3. Do that list, then let it rerun the plan until everything says `done`.
+
+Lost a subscription? `node install.mjs --apply --off grok`. Moving harness? `--apply --host codex`.
+
+## What it is
+
 Fleet is self-contained: Claude Code gets its plugin, skills and merge guard; Codex, Grok, agy, Cursor and other
 MCP clients use the same server and run history. No agent-toolkit checkout is required after splitting this folder.
 
