@@ -1,7 +1,7 @@
 {
   "name": "fleet",
-  "version": "0.7.0",
-  "description": "Codex, Antigravity and DeepSeek jobs with shared history, verified batches and guarded integration.",
+  "version": "0.8.0",
+  "description": "Codex, agy, DeepSeek, Grok and API jobs with shared history, cost controls and guarded integration.",
   "author": {
     "name": "wenbinio"
   }

@@ -7,32 +7,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { atomicJson, readJson } from "./lib/jobs.mjs";
 import { loadToolkit } from "./lib/toolkit-link.mjs";
 
+import { ADAPTERS } from "./lib/adapters.mjs";
+
 const OUTPUT_LIMIT = 2 * 1024 * 1024;
-export function backendCommand(run, directory, repo) {
-  const prompt = path.join(directory, "prompt.txt");
-  if (run.backend === "deepseek") return {
-    exe: "powershell", args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(repo, "bin", "dsh-run.ps1"), "-Task", prompt, "-Cwd", run.cwd, "-Model", run.model],
-  };
-  const args = [path.join(repo, "lib", "runners.mjs"), `${run.backend}-run`];
-  if (run.backend === "codex") args.push(run.codexId);
-  args.push(prompt, "--model", run.model);
-  if (run.backend === "codex") {
-    args.push("--cwd", run.cwd, "--effort", run.effort);
-    if (run.readOnly) args.push("--read-only");
-    if (run.resume) args.push("--resume", "last");
-  } else {
-    if (run.cwd) args.push("--add-dir", run.cwd);
-    if (run.jsonSchema) args.push("--json-schema", run.jsonSchema);
-  }
-  for (const dir of run.addDirs ?? []) args.push("--add-dir", dir);
-  return { exe: process.execPath, args };
-}
-export function finalText(event) {
-  const value = event.text ?? event.content ?? (typeof event.message === "string" ? event.message : event.message?.content) ?? (typeof event.data === "string" ? event.data : event.data?.text ?? event.data?.content) ?? event.output ?? event.answer ?? event.result;
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map(part => typeof part === "string" ? part : part.text ?? "").join("");
-  return "";
-}
+export { finalText } from "./lib/adapters.mjs";
+export function backendCommand(run, directory, repo) { return ADAPTERS[run.backend].command(run, { directory, repo }); }
 export function killTree(child) {
   if (!child?.pid) return;
   if (process.platform === "win32") {
@@ -45,8 +24,8 @@ export function killTree(child) {
 export async function runAskJob(directory, { env = process.env, spawnBackend = spawn, stopTree = killTree, pollMs = 1000, handoff = false } = {}) {
   const file = path.join(directory, "run.json");
   let run = readJson(file), child, timer, interrupted = false;
-  let stdout = Buffer.alloc(0), stderr = Buffer.alloc(0), answer = "", eventsFd, answerFd;
-  let codexSummary;
+  let stdout = Buffer.alloc(0), stderr = Buffer.alloc(0), answer = "", outputFd, jsonOutput = "";
+  const adapter = ADAPTERS[run.backend], state = {};
   const append = (current, chunk) => current.length >= OUTPUT_LIMIT ? current : Buffer.concat([current, Buffer.from(chunk).subarray(0, OUTPUT_LIMIT - current.length)]);
   try {
     if (handoff) {
@@ -59,26 +38,9 @@ export async function runAskJob(directory, { env = process.env, spawnBackend = s
     }
     const { repo, toolkit } = await loadToolkit({ env });
     const { exe, args } = backendCommand(run, directory, repo);
-    if (run.backend === "deepseek") eventsFd = fs.openSync(path.join(directory, "events.jsonl"), "w");
-    if (run.backend === "agy") answerFd = fs.openSync(path.join(directory, "answer.txt"), "w");
+    if (adapter.outputFile) outputFd = fs.openSync(path.join(directory, adapter.outputFile), "w");
     let pending = "";
-    const line = text => {
-      if (run.backend === "codex") {
-        const escaped = run.codexId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const match = text.match(new RegExp(`^\\[${escaped}\\] round (\\d+) exit (-?\\d+), session (.+)$`));
-        if (match) codexSummary = { codexRound: Number(match[1]), session: match[3].trim() };
-      } else if (run.backend === "deepseek") {
-        try {
-          const event = JSON.parse(text);
-          const session = event.session_id ?? event.sessionId ?? (typeof event.session === "string" ? event.session : event.session?.id) ?? event.data?.session_id ?? event.data?.sessionId ?? event.data?.session?.id;
-          if (typeof session === "string") run.session = session;
-          if (event.type === "final" || event.event === "final") {
-            const text = finalText(event);
-            if (text) answer += (answer ? "\n" : "") + text;
-          }
-        } catch { /* Retain malformed or partial event lines in events.jsonl. */ }
-      }
-    };
+    const line = text => adapter.line?.(text, state, run);
     if (fs.existsSync(path.join(directory, "interrupt.flag"))) {
       interrupted = true;
       throw new Error("interrupted");
@@ -87,9 +49,9 @@ export async function runAskJob(directory, { env = process.env, spawnBackend = s
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
     child.stdout.on("data", chunk => {
       stdout = append(stdout, chunk);
-      if (eventsFd !== undefined) fs.writeSync(eventsFd, chunk);
-      if (answerFd !== undefined) fs.writeSync(answerFd, chunk);
-      if (run.backend !== "agy") {
+      if (outputFd !== undefined) fs.writeSync(outputFd, chunk);
+      if (adapter.json) jsonOutput += chunk;
+      if (adapter.line) {
         pending += chunk;
         let index;
         while ((index = pending.indexOf("\n")) !== -1) { line(pending.slice(0, index).replace(/\r$/, "")); pending = pending.slice(index + 1); }
@@ -102,25 +64,20 @@ export async function runAskJob(directory, { env = process.env, spawnBackend = s
     const exitCode = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", code => resolve(code ?? 1)); });
     if (pending) line(pending);
     clearInterval(timer);
-    if (answerFd !== undefined) { fs.closeSync(answerFd); answerFd = undefined; answer = fs.readFileSync(path.join(directory, "answer.txt"), "utf8"); }
-    if (run.backend === "codex" && codexSummary) {
-      Object.assign(run, codexSummary);
-      const root = path.join(toolkit.loadConfig(env).runsDir, "codex", run.codexId);
-      run.eventsPath = path.join(root, `r${run.codexRound}.events.jsonl`);
-      try { answer = fs.readFileSync(path.join(root, `r${run.codexRound}.last.txt`), "utf8"); }
-      catch (error) { if (!exitCode && !interrupted) throw new Error(`cannot read Codex final answer: ${error.message}`); }
-    }
+    if (outputFd !== undefined) { fs.closeSync(outputFd); outputFd = undefined; }
+    const parsed = adapter.parse({ run, directory, toolkit, env, exitCode, interrupted, state, stdout: adapter.json ? jsonOutput : stdout.toString("utf8"), stderr: stderr.toString("utf8") });
+    answer = typeof parsed.answer === "string" ? parsed.answer : "";
     fs.writeFileSync(path.join(directory, "answer.txt"), answer);
-    const status = interrupted ? "interrupted" : run.backend === "agy" && exitCode === 3 ? "denied" : exitCode !== 0 || !answer.trim() ? "failed" : "done";
-    run = { ...run, status, exitCode };
-    if (status !== "done") run.error = status === "interrupted" ? "interrupted" : stderr.toString("utf8").slice(0, 2000) || (exitCode ? `exit ${exitCode}` : "empty answer");
-    if (!exitCode && !answer.trim() && !interrupted) run.error = "empty answer";
+    if (parsed.reasoning !== undefined) fs.writeFileSync(path.join(directory, "reasoning.txt"), parsed.reasoning);
+    const status = interrupted ? "interrupted" : parsed.status ?? (adapter.deniedCodes?.includes(exitCode) ? "denied" : exitCode !== 0 || !answer.trim() ? "failed" : "done");
+    run = { ...run, ...parsed.metadata, status, exitCode };
+    if (status !== "done") run.error = status === "interrupted" ? "interrupted" : parsed.error || stderr.toString("utf8").slice(0, 2000) || (exitCode ? `exit ${exitCode}` : "empty answer");
+    if (!parsed.status && !exitCode && !answer.trim() && !interrupted) run.error = "empty answer";
   } catch (error) {
     run = { ...run, status: interrupted ? "interrupted" : "failed", exitCode: 1, error: (stderr.toString("utf8") || error.message).slice(0, 2000) };
   } finally {
     clearInterval(timer);
-    if (eventsFd !== undefined) fs.closeSync(eventsFd);
-    if (answerFd !== undefined) fs.closeSync(answerFd);
+    if (outputFd !== undefined) fs.closeSync(outputFd);
     fs.writeFileSync(path.join(directory, "stdout.txt"), stdout);
     fs.writeFileSync(path.join(directory, "stderr.txt"), stderr);
     if (!fs.existsSync(path.join(directory, "answer.txt"))) fs.writeFileSync(path.join(directory, "answer.txt"), answer);

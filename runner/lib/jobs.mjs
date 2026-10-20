@@ -5,12 +5,12 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { resolveDataDir } from "./data-dir.mjs";
-import { toolkitRepo, loadToolkit } from "./toolkit-link.mjs";
+import { ADAPTERS, BACKENDS, ASK_KEYS, TERMINAL_STATUSES } from "./adapters.mjs";
+export { BACKENDS, ASK_KEYS, TERMINAL_STATUSES } from "./adapters.mjs";
+import { toolkitRepo } from "./toolkit-link.mjs";
 
 export const FLEET_CLI = fileURLToPath(new URL("../fleet.mjs", import.meta.url));
 export const ASK_JOB = fileURLToPath(new URL("../ask-job.mjs", import.meta.url));
-export const BACKENDS = ["codex", "agy", "deepseek"];
-export const ASK_KEYS = ["backend", "prompt", "promptFile", "cwd", "model", "effort", "readOnly", "addDirs", "jsonSchema", "resume"];
 export const readJson = file => JSON.parse(fs.readFileSync(file, "utf8"));
 export function atomicJson(file, value) {
   const temporary = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
@@ -54,25 +54,31 @@ function absoluteDirectory(value, name) {
 export function validateAsk(opts) {
   if (!opts || typeof opts !== "object" || Array.isArray(opts)) throw new Error("options must be an object");
   for (const key of Object.keys(opts)) if (!ASK_KEYS.includes(key)) throw new Error(`unexpected argument: ${key}`);
-  if (!BACKENDS.includes(opts.backend)) throw new Error("backend must be codex, agy or deepseek");
+  if (!BACKENDS.includes(opts.backend)) throw new Error(`backend must be one of ${BACKENDS.join(", ")}`);
+  const adapter = ADAPTERS[opts.backend];
+  for (const key of Object.keys(opts)) {
+    if (opts[key] !== undefined && !["backend", "prompt", "promptFile", ...adapter.allowed].includes(key)) {
+      const supported = BACKENDS.filter(name => ADAPTERS[name].allowed.includes(key)).join(" or ");
+      throw new Error(`${key} is ${supported} only`);
+    }
+  }
   if ((opts.prompt !== undefined) === (opts.promptFile !== undefined)) throw new Error("provide exactly one of prompt or promptFile");
   if (opts.prompt !== undefined) nonempty(opts.prompt, "prompt");
   if (opts.promptFile !== undefined) {
     nonempty(opts.promptFile, "promptFile");
     if (!path.isAbsolute(opts.promptFile) || !fs.statSync(opts.promptFile).isFile()) throw new Error("promptFile must be an absolute file path");
   }
-  if (opts.backend !== "agy" || opts.cwd !== undefined) absoluteDirectory(opts.cwd, "cwd");
-  for (const key of ["effort", "readOnly", "resume"]) if (opts[key] !== undefined && opts.backend !== "codex") throw new Error(`${key} is codex only`);
-  if (opts.jsonSchema !== undefined && opts.backend !== "agy") throw new Error("jsonSchema is agy only");
+  if (adapter.required?.includes("cwd") || opts.cwd !== undefined) absoluteDirectory(opts.cwd, "cwd");
   if (opts.addDirs !== undefined) {
-    if (opts.backend === "deepseek") throw new Error("addDirs is codex or agy only");
     if (!Array.isArray(opts.addDirs)) throw new Error("addDirs must be an array");
     for (const dir of opts.addDirs) absoluteDirectory(dir, "addDirs");
   }
-  if (opts.effort !== undefined && !["low", "medium", "high", "xhigh"].includes(opts.effort)) throw new Error("invalid effort");
   if (opts.readOnly !== undefined && typeof opts.readOnly !== "boolean") throw new Error("readOnly must be a boolean");
-  for (const key of ["resume", "jsonSchema", "model"]) if (opts[key] !== undefined) nonempty(opts[key], key);
-  if (opts.backend === "deepseek" && opts.model !== undefined && !["deepseek-flash", "deepseek-v4-pro"].includes(opts.model)) throw new Error("invalid deepseek model");
+  for (const key of ["resume", "jsonSchema", "model", "effort", "provider", "system"]) if (opts[key] !== undefined) nonempty(opts[key], key);
+  if (opts.system !== undefined && (!path.isAbsolute(opts.system) || !fs.statSync(opts.system).isFile())) throw new Error("system must be an absolute file path");
+  if (opts.maxTokens !== undefined && (!Number.isSafeInteger(opts.maxTokens) || opts.maxTokens < 1)) throw new Error("maxTokens must be a positive integer");
+  if (opts.maxCostUsd !== undefined && (!Number.isFinite(opts.maxCostUsd) || opts.maxCostUsd < 0)) throw new Error("maxCostUsd must be non-negative");
+  adapter.validate?.(opts);
 }
 async function withStartLock(root, action) {
   fs.mkdirSync(root, { recursive: true });
@@ -98,31 +104,31 @@ async function withStartLock(root, action) {
 }
 export async function startAsk(opts, { env = process.env, dataDir, spawnJob = spawn } = {}) {
   validateAsk(opts);
-  toolkitRepo({ env }); // Fail before creating a run when setup is missing.
+  const repo = toolkitRepo({ env }), adapter = ADAPTERS[opts.backend];
   dataDir ??= await resolveDataDir({ env });
   const root = path.join(dataDir, "runs");
   return withStartLock(root, async () => {
     const existing = fs.readdirSync(root, { withFileTypes: true }).filter(e => e.isDirectory()).flatMap(e => {
       try { return [readAsk(runDirectory(dataDir, e.name))]; } catch { return []; }
     });
-    if (opts.backend === "agy" && existing.filter(r => r.backend === "agy" && r.status === "running").length >= 4) throw new Error("agy runs 4 jobs at once; wait for one");
+    if (adapter.maxLive && existing.filter(r => r.backend === opts.backend && r.status === "running").length >= adapter.maxLive) throw new Error(`${opts.backend} runs ${adapter.maxLive} jobs at once; wait for one`);
     let resumed;
     if (opts.resume) {
       resumed = readAsk(runDirectory(dataDir, opts.resume));
-      if (resumed.kind !== "ask" || resumed.backend !== "codex" || !resumed.codexId) throw new Error("resume must name an earlier codex ask run");
-      if (existing.some(r => r.codexId === resumed.codexId && r.status === "running")) throw new Error("that Codex session is still running; wait before resuming");
+      adapter.resume(opts, resumed, existing);
     }
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
     const runId = `ask-${opts.backend}-${stamp}-${randomBytes(2).toString("hex")}`;
+    const prepared = await adapter.prepare?.(opts, { repo, env, runId, resumed });
     const directory = path.join(root, runId);
     fs.mkdirSync(directory);
     const prompt = opts.prompt ?? fs.readFileSync(opts.promptFile, "utf8");
     fs.writeFileSync(path.join(directory, "prompt.txt"), prompt);
     const run = {
       kind: "ask", runId, backend: opts.backend,
-      model: opts.model ?? { codex: "astra", agy: "gemini-3.8-flash-low", deepseek: "deepseek-flash" }[opts.backend],
-      ...(opts.backend === "codex" ? { effort: opts.effort ?? "high", codexId: resumed?.codexId ?? runId } : {}),
-      ...Object.fromEntries(["cwd", "readOnly", "addDirs", "jsonSchema", "resume"].filter(key => opts[key] !== undefined).map(key => [key, opts[key]])),
+      ...adapter.defaults,
+      ...Object.fromEntries(adapter.allowed.filter(key => opts[key] !== undefined).map(key => [key, opts[key]])),
+      ...prepared,
       status: "running", startedAt: new Date().toISOString(), pid: process.pid,
     };
     const file = path.join(directory, "run.json");
@@ -156,8 +162,8 @@ export async function listRuns(dataDir, { limit = 20, backend } = {}) {
   if (backend !== undefined && !BACKENDS.includes(backend)) throw new Error("invalid backend");
   let entries;
   try { entries = fs.readdirSync(path.join(dataDir, "runs"), { withFileTypes: true }); }
-  catch (e) { if (e.code === "ENOENT") return []; throw e; }
-  const runs = [];
+  catch (e) { if (e.code === "ENOENT") return { runs: [], spendUsd: 0 }; throw e; }
+  const runs = []; let spendUsd = 0;
   for (const entry of entries.filter(e => e.isDirectory())) {
     try {
       const directory = runDirectory(dataDir, entry.name), kind = kindOf(directory);
@@ -165,21 +171,18 @@ export async function listRuns(dataDir, { limit = 20, backend } = {}) {
       const startedAt = payload.startedAt ?? fs.statSync(directory).mtime.toISOString();
       const run = { runId: entry.name, kind, backend: kind === "ask" ? payload.backend : "codex", model: payload.model ?? null, status: payload.status ?? (payload.complete ? "done" : "running"), startedAt };
       if (kind === "batch") Object.assign(run, { complete: payload.complete === true, taskCount: (payload.results ?? []).length, statuses: (payload.results ?? []).map(r => (r.driver ?? r).status ?? "unknown") });
+      const adapter = kind === "ask" ? ADAPTERS[payload.backend] : null;
+      Object.assign(run, adapter?.row?.(payload));
+      spendUsd += adapter?.spend?.(payload) ?? 0;
       if (!backend || run.backend === backend) runs.push(run);
     } catch { /* Ignore incomplete reservations and invalid run directories. */ }
   }
-  return runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.runId.localeCompare(a.runId)).slice(0, limit);
+  return { runs: runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.runId.localeCompare(a.runId)).slice(0, limit), spendUsd };
 }
-export async function eventsFile(directory, run, { env = process.env } = {}) {
-  if (run.backend !== "codex") return path.join(directory, "events.jsonl");
-  if (run.eventsPath) return run.eventsPath;
-  const { toolkit } = await loadToolkit({ env });
-  const root = path.join(toolkit.loadConfig(env).runsDir, "codex", run.codexId);
-  try {
-    const rounds = fs.readdirSync(root).filter(n => /^r\d+\.events\.jsonl$/.test(n)).sort((a, b) => Number(b.match(/\d+/)[0]) - Number(a.match(/\d+/)[0]));
-    return rounds[0] ? path.join(root, rounds[0]) : null;
-  } catch (e) { if (e.code === "ENOENT") return null; throw e; }
+export async function transcriptSource(directory, run, { env = process.env } = {}) {
+  return ADAPTERS[run.backend].transcript(run, { directory, env });
 }
+export async function eventsFile(directory, run, options) { return (await transcriptSource(directory, run, options)).file ?? null; }
 export async function waitRuns(ids, { dataDir, env = process.env, timeout, pollMs = 2000 } = {}) {
   if (!ids.length) throw new Error("wait needs at least one runId");
   if (timeout !== undefined && (!Number.isFinite(timeout) || timeout < 0)) throw new Error("timeout must be non-negative seconds");
@@ -191,7 +194,7 @@ export async function waitRuns(ids, { dataDir, env = process.env, timeout, pollM
       const run = kind === "ask" ? readAsk(directory) : readJson(path.join(directory, kind === "delegate" ? "state.json" : "results.json"));
       return { runId: run.runId ?? path.basename(directory), backend: run.backend ?? "codex", model: run.model ?? null, status: run.status ?? (run.complete ? "done" : "running"), durationMs: run.durationMs ?? (run.startedAt ? Date.now() - Date.parse(run.startedAt) : null), answer: answerOf(directory, 6000, true) };
     });
-    if (rows.every(r => ["done", "failed", "denied", "interrupted", "lost"].includes(r.status))) return rows;
+    if (rows.every(r => TERMINAL_STATUSES.has(r.status))) return rows;
     if (timeout !== undefined && Date.now() - start >= timeout * 1000) return rows.map(r => ["running", "awaiting-steer"].includes(r.status) ? { ...r, error: "wait timeout" } : r);
     await delay(Math.min(pollMs, timeout === undefined ? pollMs : Math.max(1, timeout * 1000 - (Date.now() - start))));
   }

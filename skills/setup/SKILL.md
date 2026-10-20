@@ -1,100 +1,52 @@
 ---
 name: setup
-description: Use when the user asks to configure, bootstrap, repair, or re-verify fleet on a machine or cloud session, or when its config.json is missing or stale.
+description: Install, repair or re-check the fleet plugin and its backends (args: optional backend to focus on); never logs in.
 ---
 
-# Set Up Fleet
+# Set up the fleet
 
-Discover the local Codex CLI, verify non-interactive authentication, and write machine-local plugin configuration. Do not write machine facts into the plugin repository.
+## 1. Run the toolkit setup
 
-## Resolve the platform and data directory
+The agent-toolkit checkout is `repo` in `~/.agent-toolkit/config.json` (usually `D:/claude-work/agent-toolkit`).
 
-1. Detect `windows` versus `posix` and use exactly that lowercase value for `platform`.
-2. Resolve `dataDir` exactly as setup and later readers do: use non-empty `${CLAUDE_PLUGIN_DATA}` verbatim; otherwise choose the lexicographically-first `~/.claude/plugins/data/*fleet*/` directory containing `config.json`, then the lexicographically-first match, then `~/.claude/plugins/data/fleet/`.
-3. Create that data directory if needed. The target is `<dataDir>/config.json`.
+```bash
+node <repo>/setup.mjs --quiet
+```
 
-## Discover Codex
+It is idempotent. It finds the tools, checks sign-ins without logging in, writes `~/.agent-toolkit/config.json`
+and fleet's config at `~/.claude/plugins/data/fleet-agent-toolkit/config.json` (the Codex path drifts on every
+Codex update; setup refreshes it), installs or updates `fleet@agent-toolkit`, and removes the plugins it replaced.
+Exit 0 with only totals means it's done. Pass every `warn`/`missing` row's fix to Lok in one line. After a plugin
+update, Claude Code needs a restart.
 
-On Windows, parse `CODEX_CLI_PATH` from `~/.codex/config.toml`, resolve it to an absolute path, and verify that the file exists. The executable path is hash-versioned and changes on application updates, so never hard-code or reuse an unverified old path. If the key or file is missing, tell the user to install or refresh the Codex desktop application and re-run setup.
+## 2. Check the backends
 
-On POSIX, run `which codex`. If it is absent, guide the user through `npm i -g @openai/codex`, running the global install only with their confirmation, and then run `which codex` again.
+Call `fleet_accounts`. It reports every backend without credentials:
 
-Set `codexExe` to the discovered absolute executable path. If no executable is available or the user declines installation, set `codexExe` to `null`, classify authentication as `none`, and still write the config so dispatch can use its Claude-only fallback.
+- **codex**: `codex login status`. **agy**: `agy models`. **deepseek**: found or not; its account isn't
+  inspectable headless.
+- **grok**: the cached login in `~/.grok/auth.json` (by shape only; `grok models` falsely says "not
+  authenticated").
+- **api**: each provider's key status (type, credit left, free requests today) and total spend.
 
-## Choose worker settings
+**Never log in for Lok.** Print the command and let him run it: `codex login`, `agy`, `grok login` (browser), or the
+DeepSeek Harness app. Never read, print or copy a credential file's contents or a key.
 
-Read the chosen `model` and `effort` from the machine's `~/.codex/config.toml`, defaulting to `gpt-5.6-sol` / `xhigh`. Pin both on every smoke and worker. Validate optional `isolation` as `plugins-off` (default), `ignore-user-config`, or `none`, and optional `windowsSandbox` as `elevated` or `unelevated`; unknown values are errors. `ignore-user-config` requires an explicit non-empty model. Leave `windowsSandbox` absent unless selected explicitly; never force elevated by default.
+## 3. Codex worker settings (dispatch and delegate)
 
-## Run the headless shell smoke
-
-When `codexExe` is available, require an ephemeral, read-only worker to **execute a shell command** that prints a fresh token such as `FLEET_SHELL_<random-id>` and then answer with that token. Require exit 0, a JSON command-execution item with exit code 0 and that exact output, and a matching final answer. A text-only READY or token answer is insufficient. Close standard input.
-
-Resolve usable Node >= 18 first. When available, use the runner's smoke, passing the absolute executable paths and chosen model/effort:
+Only when dispatch or delegate fails with a sandbox or backend error, or Lok asks. Use fleet's config for
+`codexExe`, `nodeExe`, `model` and `effort`:
 
 ```text
-"<absolute nodeExe>" "<absolute plugin root>/runner/fleet-runner.mjs" --smoke --codex-exe "<absolute codexExe>" --model "<model>" --effort "<effort>"
+"<nodeExe>" "${CLAUDE_PLUGIN_ROOT}/runner/fleet-runner.mjs" --smoke --codex-exe "<codexExe>" --model "<model>" --effort "<effort>"
+"<nodeExe>" "${CLAUDE_PLUGIN_ROOT}/runner/fleet-runner.mjs" --probe --codex-exe "<codexExe>" --model "<model>" --effort "<effort>" --isolation "<passing isolation>"
 ```
 
-On Windows it tries `plugins-off` first, then `plugins-off` with `windowsSandbox: "unelevated"`. If needed it tries `ignore-user-config` on exec with the pinned model and no implicit Windows sandbox override. It reports each attempt and the passing settings. **Unelevated is a weaker sandbox.** Record a passing unelevated setting only if the caller explicitly invoked `/fleet:setup --allow-unelevated`; forward `--allow-unelevated` to the smoke. Without that opt-in, an unelevated success is diagnostic only. If only that attempt works, fail setup, explain the weaker sandbox and remedy, and preserve any existing config rather than silently saving it. A failed shell smoke must fail setup even when the worker can talk.
+The smoke must make a worker **run a shell command** and echo a fresh token; a text-only reply isn't enough. It
+reports the isolation that passed. The probe checks `codex app-server`; record `backend: "app-server"` in fleet's
+config only when it passes, else `exec` (delegate needs app-server). An unelevated Windows sandbox is weaker: record
+`windowsSandbox: "unelevated"` only when Lok explicitly asks (`--allow-unelevated`). On `setup refresh had errors`,
+report `sandbox_setup_failed`: close the Codex desktop app (it runs `node_repl.exe`), or opt in to unelevated.
 
-Without Node, run the same attempts manually and inspect the `--json` stream. Default attempt (substitute a fresh token and pinned model/effort):
-
-Windows PowerShell:
-
-```powershell
-$null | & $codexExe exec --disable plugins -c mcp_servers.node_repl.enabled=false --json --sandbox read-only --ephemeral -m $model -c 'model_reasoning_effort="xhigh"' 'Run a shell command that prints FLEET_SHELL_<random-id>, then reply with that token. Do not run git.'
-```
-
-POSIX shell:
-
-```sh
-"$codexExe" exec --disable plugins -c mcp_servers.node_repl.enabled=false --json --sandbox read-only --ephemeral -m "$model" -c 'model_reasoning_effort="xhigh"' 'Run a shell command that prints FLEET_SHELL_<random-id>, then reply with that token. Do not run git.' < /dev/null
-```
-
-Use the configured effort in place of the illustrative `xhigh`. For the second Windows attempt append `-c 'windows.sandbox="unelevated"'` before the prompt; it remains diagnostic unless `--allow-unelevated` was explicitly supplied. For the exec-only config-free attempt replace `--disable plugins -c mcp_servers.node_repl.enabled=false` with `--ignore-user-config`, retain the explicit `-m` and effort, and supply a Windows sandbox override only when explicitly selected. The `none` mode omits isolation flags and keeps the user's plugins/MCP config; setup does not select it automatically.
-
-On `setup refresh had errors`, report `failureReason: "sandbox_setup_failed"` and this remedy: use `isolation: "plugins-off"` (or `ignore-user-config` with a model on exec); close the Codex desktop app (it runs `node_repl.exe`), or opt in to `windowsSandbox: "unelevated"`, a weaker sandbox. Do not retry unchanged launches.
-
-Classify `authMode` from a successful shell smoke:
-
-- `api_key` when `OPENAI_API_KEY` is present and the smoke works with it.
-- `subscription` when the smoke works through the existing Codex/ChatGPT login without an API key.
-- `none` when Codex is unavailable or no non-interactive authentication works. A sandbox/shell failure is a setup failure, not evidence of missing authentication.
-
-Do not start an interactive OAuth flow in a headless or cloud session.
-
-## Probe the runner backend
-
-Resolve Node to an absolute `nodeExe` and run `<nodeExe> --version`. Node is usable only when the executable exists and its major version is >= 18. When `mode` will be `codex` (`authMode` is `subscription` or `api_key`) and both absolute `codexExe` and usable absolute `nodeExe` are present, run this capability probe with the absolute paths:
-
-```text
-"<absolute nodeExe>" "<absolute plugin root>/runner/fleet-runner.mjs" --probe --codex-exe "<absolute codexExe>" --model "<model>" --effort "<effort>" --isolation "<passing isolation>"
-```
-
-Append `--windows-sandbox "<passing windowsSandbox>"` only when the smoke selected an explicit override. The probe must initialize `codex app-server`, list its models, and complete an ephemeral read-only turn with a successful shell command and matching token output. Record `backend` as `app-server` only on compatibility. App-server cannot ignore user config: that request falls back to `plugins-off` with a result note. If the exec smoke required `ignore-user-config`, retain `backend: "exec"` so subsequent workers use the mode that passed. Otherwise, if the app-server probe fails, retain the working exec smoke's settings and `backend: "exec"`; keep usable `nodeExe`. Re-probe when Codex or Node changes. Without Node >= 18, use `backend: "exec"` and `nodeExe: null` for Agent-tool orchestration.
-
-## Write configuration
-
-After the shell smoke passes, write `<dataDir>/config.json` with these keys and no credentials; omit `windowsSandbox` when no override was selected. `codexVersion` and `nodeVersion` make probe staleness a plain string comparison at dispatch time:
-
-```json
-{
-  "codexExe": "<absolute executable path>",
-  "platform": "windows",
-  "authMode": "subscription",
-  "model": "gpt-5.6-sol",
-  "effort": "xhigh",
-  "isolation": "plugins-off",
-  "backend": "app-server",
-  "nodeExe": "<absolute node path, or null>",
-  "codexVersion": "<codexExe --version output>",
-  "nodeVersion": "<nodeExe --version output, or null>",
-  "verifiedAt": "<ISO-8601 UTC timestamp>"
-}
-```
-
-Use the actual `platform` and `authMode`; encode `codexExe` as JSON `null` when unavailable. Record the exact passing `isolation`. When explicitly opted in and passed, also record `"windowsSandbox": "unelevated"` and clearly say it is a weaker sandbox. An explicitly selected `elevated` override is also supported. Set `backend` from the probe, never Node presence alone, and `nodeExe` to the usable absolute path or JSON `null`. Set `verifiedAt` when setup completes. Report the config path, executable, platform, auth, backend, isolation, and any Windows override without exposing secrets. Older configs lacking isolation default to `plugins-off`; configs lacking `windowsSandbox` leave the user's setting alone.
-
-On Windows the sandboxed worker runs as a different user, so git in a worktree can fail with `dubious ownership`. The Claude driver runs git; never ask Codex to do so.
-
-If `authMode` is `none`, explain that `/fleet:dispatch` will run the same worktree, verification, review, and integration pipeline in Claude-only mode. The plugin data directory's persistence in cloud sandboxes is unverified, so setup may need to be run again in each cloud session.
+Finish with what's ready, what Lok must run himself, and which skill fits his task (`fleet:ask`, `fleet:fan`,
+`fleet:dispatch`, `fleet:delegate`).

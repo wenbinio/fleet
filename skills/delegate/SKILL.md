@@ -1,15 +1,17 @@
 ---
 name: delegate
-description: Use when the user wants live, steerable delegation of a coding task to Codex in the current working tree, with progress narrated like a native agent while the user reviews the result.
+description: Live, steerable coding in the current tree (args: backend, then the task; codex only), narrated as it goes; the user reviews the result.
 ---
 
 # Delegate Live in the Current Tree
 
+Backend argument: only `codex` (it needs Codex's app-server thread). For agy, grok, deepseek or api use `fleet:ask`. Steer with `fleet_steer`, stop with `fleet_interrupt`, and watch with `fleet_status` (the `runId` is the delegate run folder's name).
+
 ## Configure
 
-1. Resolve `dataDir` exactly as setup and later readers do: use non-empty `${CLAUDE_PLUGIN_DATA}` verbatim; otherwise choose the lexicographically-first `~/.claude/plugins/data/*fleet*/` directory containing `config.json`, then the lexicographically-first match, then `~/.claude/plugins/data/fleet/`.
+1. Resolve `dataDir`: non-empty `${CLAUDE_PLUGIN_DATA}` verbatim; else `~/.claude/plugins/data/fleet-agent-toolkit/` (the folder setup writes). Never use the legacy `codex-fleet*` or `gemini-fleet*` folders.
 2. Read `${dataDir}/config.json`. If missing, stop, run `/fleet:setup`, then re-read it. Never guess paths or authentication. Require absolute existing `codexExe` and `nodeExe`; if either path no longer exists (the Codex binary path is hash-versioned and drifts on app updates), re-run setup before continuing. Use configured `model` and `effort` verbatim.
-3. Delegate requires the app-server backend — it holds one live thread open. If `config.backend !== "app-server"`, stop and tell the user plainly: delegate is unavailable on this machine's backend; use `/fleet:solo` (which works on either) or re-run `/fleet:setup` to re-probe. Do not launch the runner and let it die inside the transport.
+3. Delegate requires the app-server backend — it holds one live thread open. If `config.backend !== "app-server"`, stop and tell the user plainly: delegate is unavailable on this machine's backend; use `/fleet:dispatch` with one task (which works on either) or re-run `/fleet:setup` to re-probe. Do not launch the runner and let it die inside the transport.
 
 Pass configured `isolation` and optional `windowsSandbox` into the task JSON. Validate `isolation` as `plugins-off` (default), `ignore-user-config`, or `none`, and `windowsSandbox` as `elevated` or `unelevated`; unknown values are errors. Default app-server spawns include `--disable plugins -c mcp_servers.node_repl.enabled=false`. App-server cannot ignore user config, so `ignore-user-config` requires a model and falls back to plugins-off with a result note. `none` omits isolation flags. A Windows override adds `-c windows.sandbox="<value>"` in every mode; unset preserves the user's setting. Unelevated is a weaker sandbox and must be explicitly selected.
 

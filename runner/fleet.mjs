@@ -3,14 +3,15 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveDataDir } from "./lib/data-dir.mjs";
 import { startAsk, waitRuns, listRuns } from "./lib/jobs.mjs";
+import { loadToolkit } from "./lib/toolkit-link.mjs";
 
-export async function cli(argv, { env = process.env, print = console.log } = {}) {
+export async function cli(argv, { env = process.env, print = console.log, apiOptions = {} } = {}) {
   const [command, ...args] = argv;
   const dataDir = await resolveDataDir({ env });
   let result;
   if (command === "ask") {
     const opts = {};
-    const names = { backend: "backend", prompt: "prompt", "prompt-file": "promptFile", cwd: "cwd", model: "model", effort: "effort", "add-dir": "addDirs", "json-schema": "jsonSchema", resume: "resume" };
+    const names = { backend: "backend", prompt: "prompt", "prompt-file": "promptFile", cwd: "cwd", model: "model", effort: "effort", "add-dir": "addDirs", "json-schema": "jsonSchema", resume: "resume", provider: "provider", "max-tokens": "maxTokens", "max-cost": "maxCostUsd", system: "system" };
     for (let i = 0; i < args.length; i++) {
       if (args[i] === "--read-only") { opts.readOnly = true; continue; }
       const name = args[i].startsWith("--") && names[args[i].slice(2)];
@@ -18,7 +19,7 @@ export async function cli(argv, { env = process.env, print = console.log } = {})
       const value = args[++i];
       if (name === "addDirs") (opts.addDirs ??= []).push(value);
       else if (opts[name] !== undefined) throw new Error(`duplicate option: ${args[i - 1]}`);
-      else opts[name] = value;
+      else opts[name] = ["maxTokens", "maxCostUsd"].includes(name) ? Number(value) : value;
     }
     result = await startAsk(opts, { env, dataDir });
   } else if (command === "wait") {
@@ -31,11 +32,22 @@ export async function cli(argv, { env = process.env, print = console.log } = {})
     result = await waitRuns(ids, { dataDir, env, timeout });
     for (const row of result) print(JSON.stringify(row));
     return result.every(r => r.status === "done") ? 0 : 1;
+  } else if (command === "models") {
+    let serviceName, n = 4;
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === "--free") continue;
+      if (!["--provider", "--n"].includes(args[i]) || i + 1 >= args.length) throw new Error(`invalid option: ${args[i]}`);
+      if (args[i] === "--provider") serviceName = args[++i]; else n = Number(args[++i]);
+    }
+    const { repo } = await loadToolkit({ env });
+    const api = await import(pathToFileURL(path.join(repo, "lib", "api.mjs")).href);
+    for (const id of await api.pickFree(n, api.provider(serviceName, { env }), { ...apiOptions, env })) print(id);
+    return 0;
   } else if (command === "runs" && !args.length) result = await listRuns(dataDir);
   else if (command === "run" && args.length === 1) {
     const { callTool } = await import("../mcp/fleet-mcp.mjs");
     result = (await callTool("fleet_run", { runId: args[0] }, { dataDir, env })).value;
-  } else throw new Error("usage: fleet.mjs ask --backend BACKEND (--prompt TEXT | --prompt-file FILE) [options] | wait RUNID... [--timeout SECONDS] | runs | run RUNID");
+  } else throw new Error("usage: fleet.mjs ask --backend BACKEND (--prompt TEXT | --prompt-file FILE) [options] | wait RUNID... [--timeout SECONDS] | runs | run RUNID | models [--provider P] [--free] [--n N]");
   print(JSON.stringify(result));
   return 0;
 }

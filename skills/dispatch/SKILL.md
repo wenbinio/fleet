@@ -1,15 +1,21 @@
 ---
 name: dispatch
-description: Use when the user asks Claude to delegate coding tasks to Codex CLI, dispatch a Codex fleet, run parallel GPT worker implementation, or integrate the results of a fleet run.
+description: Verified code tasks (args: backend, then the tasks; codex only) in isolated worktrees with independent review and staged integration — one task or a parallel batch.
 ---
 
 # Dispatch Fleet
 
 Plan the work, run the bundled fleet workflow, record its verdicts, and integrate only approved branches.
 
+Backend argument: only `codex` writes code here. Refuse `agy` and `grok` (read-only by design) and `api` (text only), and suggest `fleet:ask` for them. `deepseek` isn't wired into verified batches; use `fleet:ask deepseek` for an unverified edit.
+
+**One task** is a batch of one: `runId: solo-<timestamp>`, `maxParallel: 1`, one task `{id: "solo", spec, verify}`, then the same review, verdict and stage steps below. If the user says `skip review` up front, spawn no reviewer, record `--review-verdict approve --driver-verify-passed true --review-verify-passed false --allow-unverified true`, and mark the staged result **UNREVIEWED** in the report.
+
+The Codex path drifts on every Codex update: if `codexExe` is missing, run `node <agent-toolkit>/setup.mjs --quiet` (the repo path is `repo` in `~/.agent-toolkit/config.json`), which refreshes it.
+
 ## Load configuration and inputs
 
-1. Resolve `dataDir` exactly as setup and later readers do: use non-empty `${CLAUDE_PLUGIN_DATA}` verbatim; otherwise choose the lexicographically-first `~/.claude/plugins/data/*fleet*/` directory containing `config.json`, then the lexicographically-first match, then `~/.claude/plugins/data/fleet/`.
+1. Resolve `dataDir`: non-empty `${CLAUDE_PLUGIN_DATA}` verbatim; else `~/.claude/plugins/data/fleet-agent-toolkit/` (the folder setup writes). Never use the legacy `codex-fleet*` or `gemini-fleet*` folders.
 2. Read `config.json` from that directory. If it is missing, stop and run `/fleet:setup` first, then re-read it. Do not guess a Codex path or authentication mode. If the recorded `codexExe` no longer exists on disk (hash-versioned paths go stale on app updates), re-run setup discovery before dispatching. Pass `model`, `effort`, `isolation`, and optional `windowsSandbox` from config.json into the batch and driver prompts. Validate `isolation` as `plugins-off` (default when absent), `ignore-user-config`, or `none`, and `windowsSandbox` as `elevated` or `unelevated` when present. Unknown values are errors. `ignore-user-config` requires an explicit model; on app-server it falls back to plugins-off with a result note. Unelevated is a weaker sandbox; propagate it only when explicitly selected, never enable it silently.
 3. Require `repo` to name a git repository with at least one commit. Resolve `verify` to the full-project verification command and `tasks` to objects shaped like `{id, spec, verify?}`.
 4. Set `mode` from `authMode`: use `claude` when it is `none`, and `codex` for `subscription` or `api_key`. Pass through `codexExe` and `platform`. The workflow, not this skill, owns the Claude-only fallback pipeline.

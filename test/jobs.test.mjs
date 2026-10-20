@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { ADAPTERS } from "../runner/lib/adapters.mjs";
 import { atomicJson, startAsk, readAsk, runDirectory, liveStatus, waitRuns, validateAsk, listRuns, ASK_JOB } from "../runner/lib/jobs.mjs";
 import { runAskJob, backendCommand } from "../runner/ask-job.mjs";
 import { toolkitRepo } from "../runner/lib/toolkit-link.mjs";
@@ -14,16 +16,19 @@ import { cli } from "../runner/fleet.mjs";
 
 function write(file, text) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); return file; }
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fleet-ask-"));
+  const scratch = fileURLToPath(new URL("../../../.test-tmp/", import.meta.url));
+  fs.mkdirSync(scratch, { recursive: true });
+  const root = fs.mkdtempSync(path.join(scratch, "fleet-ask-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 }));
   const repo = path.join(root, "toolkit"), dataDir = path.join(root, "data"), runsDir = path.join(root, "toolkit-runs");
   const env = { ...process.env, AGENT_TOOLKIT_HOME: path.join(root, "home"), CLAUDE_PLUGIN_DATA: dataDir, FLEET_FAKE_RUNS: runsDir };
-  write(path.join(env.AGENT_TOOLKIT_HOME, "config.json"), JSON.stringify({ repo }));
+  write(path.join(env.AGENT_TOOLKIT_HOME, "config.json"), JSON.stringify({ repo, providers: [{name:"openrouter",kind:"openai",baseUrl:"https://openrouter.invalid/api/v1",keyEnv:"FAKE_PROVIDER_KEY"}] }));
   write(path.join(repo, "lib/toolkit.mjs"), `
     export const loadConfig = env => ({ runsDir: env.FLEET_FAKE_RUNS });
     export const resolveTool = name => name;
     export const signInStatus = async name => ({ backend: name === "dsh" ? "deepseek" : name, found: true, signedIn: name === "dsh" ? null : true, detail: "fixture" });
   `);
+  write(path.join(repo, "lib/api.mjs"), `export * from ${JSON.stringify(new URL("../../../lib/api.mjs", import.meta.url).href)};`);
   // A complete fake runner can also be launched by the detached integration test.
   write(path.join(repo, "lib/runners.mjs"), `
     import fs from "node:fs"; import path from "node:path";
@@ -58,7 +63,7 @@ function backendFake(action) {
   };
 }
 async function reserve(f, opts = {}) {
-  const result = await startAsk({ backend: "codex", prompt: "implement the thing", cwd: f.root, ...opts }, { env: f.env, spawnJob: detachedFake() });
+  const result = await startAsk({ backend: "codex", prompt: "implement the thing", ...(opts.backend === "api" ? {} : { cwd: f.root }), ...opts }, { env: f.env, spawnJob: detachedFake() });
   return { result, directory: runDirectory(f.dataDir, result.runId) };
 }
 function finish(child, stdout = "", stderr = "", code = 0) {
@@ -73,7 +78,7 @@ test("toolkit discovery uses config and returns an actionable missing error", t 
 test("ask validates backend options, prompt exclusivity and absolute directories", t => {
   const f = fixture(t), valid = { backend: "codex", prompt: "hello", cwd: f.root };
   for (const changes of [{ backend: "other" }, { promptFile: path.join(f.root, "missing") }, { prompt: undefined }, { cwd: "." }, { effort: "max" }, { readOnly: "yes" }, { addDirs: "dir" }, { jsonSchema: "{}" }, { unknown: true }]) assert.throws(() => validateAsk({ ...valid, ...changes }));
-  for (const key of ["effort", "readOnly", "resume"]) assert.throws(() => validateAsk({ backend: "agy", prompt: "hello", [key]: "x" }), /codex only/);
+  for (const key of ["effort", "readOnly", "resume"]) assert.throws(() => validateAsk({ backend: "agy", prompt: "hello", [key]: "x" }), /codex(?: or grok)? only/);
   assert.throws(() => validateAsk({ backend: "deepseek", prompt: "hello", cwd: f.root, model: "other" }), /invalid deepseek model/);
   assert.throws(() => validateAsk({ backend: "deepseek", prompt: "hello", cwd: f.root, addDirs: [] }), /codex or agy only/);
   assert.doesNotThrow(() => validateAsk({ backend: "agy", prompt: "hello", jsonSchema: "{}" }));
@@ -95,7 +100,7 @@ test("spawn failure records a terminal failed run", async t => {
   await assert.rejects(startAsk({ backend: "agy", prompt: "hello" }, { env: f.env, spawnJob() {
     const child = new EventEmitter(); queueMicrotask(() => child.emit("error", new Error("spawn denied"))); return child;
   } }), /spawn denied/);
-  const [run] = await listRuns(f.dataDir);
+  const { runs: [run] } = await listRuns(f.dataDir);
   assert.equal(run.status, "failed");
 });
 test("Codex copies complete final answer, round and session; resume reuses codexId", async t => {
@@ -208,14 +213,14 @@ test("MCP exposes eight concise tools and routes each kind including accounts an
   for (const name of ["fleet_runs", "fleet_run", "fleet_transcript", "fleet_status", "fleet_accounts"]) assert.equal(TOOLS.find(t => t.name === name).annotations.readOnlyHint, true);
   const asked = await callTool("fleet_ask", { backend: "agy", prompt: "hello" }, { ...options, start: (opts, options) => startAsk(opts, { ...options, spawnJob: detachedFake() }) });
   const id = asked.value.runId, directory = runDirectory(f.dataDir, id);
-  assert.equal((await callTool("fleet_runs", { backend: "agy", limit: 1 }, options)).value[0].kind, "ask");
+  assert.equal((await callTool("fleet_runs", { backend: "agy", limit: 1 }, options)).value.runs[0].kind, "ask");
   assert.equal((await callTool("fleet_run", { runId: id }, options)).value.answer, "");
   assert.equal((await callTool("fleet_status", { runId: id }, options)).value.status, "running");
   assert.match((await callTool("fleet_transcript", { runId: id }, options)).value, /Prompt:\nhello/);
   await assert.rejects(callTool("fleet_steer", { runId: id, text: "continue" }, options), /fleet_ask with resume/);
   assert.equal((await callTool("fleet_interrupt", { runId: id }, options)).value.ok, true);
   assert.ok(fs.existsSync(path.join(directory, "interrupt.flag")));
-  assert.equal((await callTool("fleet_accounts", {}, options)).value.length, 3);
+  assert.equal((await callTool("fleet_accounts", {}, { ...options, apiOptions: { keyReader: async () => null } })).value.length, 5);
   const delegate = path.join(f.dataDir, "runs", "delegate");
   write(path.join(delegate, "state.json"), '{"status":"awaiting-steer","turns":1}');
   write(path.join(delegate, "events.jsonl"), JSON.stringify({ type: "agentMessage", text: "old".repeat(100_000) }) + "\n" + Array.from({ length: 12 }, (_, i) => JSON.stringify({ type: "agentMessage", text: `beat-${i}` })).join("\n"));
@@ -235,7 +240,7 @@ test("MCP exposes eight concise tools and routes each kind including accounts an
   assert.equal((await callTool("fleet_run", { runId: batch }, options)).value.tasks[0].taskId, "task");
   assert.match((await callTool("fleet_transcript", { runId: batch, taskId: "task" }, options)).value, /full batch/);
   await assert.rejects(callTool("fleet_transcript", { runId: batch }, options), /taskId/);
-  const runs = (await callTool("fleet_runs", {}, options)).value;
+  const runs = (await callTool("fleet_runs", {}, options)).value.runs;
   assert.deepEqual(new Set(runs.map(r => r.kind)), new Set(["ask", "batch", "delegate"]));
   assert.equal(runs.find(r => r.kind === "batch").taskCount, 1);
   const codex = await reserve(f);
@@ -244,6 +249,89 @@ test("MCP exposes eight concise tools and routes each kind including accounts an
   assert.match((await callTool("fleet_status", { runId: run.runId }, options)).value.beats[0], /reasoning: live thought/);
   assert.match(eventBeat({ item: { type: "file_change", changes: [{ path: "app.js" }] } }), /files: app.js/);
   await assert.rejects(callTool("fleet_runs", { limit: -1 }, options), /positive integer/);
+});
+test("adapter table is the single source of backend contracts", () => {
+  assert.deepEqual(Object.keys(ADAPTERS), ["codex", "agy", "deepseek", "grok", "api"]);
+  for (const adapter of Object.values(ADAPTERS)) {
+    assert.equal(typeof adapter.defaults, "object"); assert.ok(Array.isArray(adapter.allowed));
+    for (const operation of ["command", "parse", "transcript"]) assert.equal(typeof adapter[operation], "function");
+  }
+  assert.equal(TOOLS[0].inputSchema.properties.effort.type, "string");
+  assert.deepEqual(TOOLS[0].inputSchema.properties.backend.enum, Object.keys(ADAPTERS));
+});
+test("Grok success, denied and resume preserve session and block duplicate live resumes", async t => {
+  const f = fixture(t);
+  const first = await reserve(f, { backend: "grok", effort: "custom-effort" });
+  assert.equal(first.result.model, "grok-4.7");
+  const run = await runAskJob(first.directory, { env: f.env, spawnBackend: backendFake(({ args, child }) => {
+    assert.ok(args.includes("grok-run")); assert.ok(args.includes("--json")); assert.ok(args.includes("custom-effort"));
+    finish(child, JSON.stringify({ answer: "read-only answer", sessionId: "grok-session", stopReason: "end_turn", usage: { total_tokens: 40 } }));
+  }) });
+  assert.equal(run.status, "done"); assert.equal(run.session, "grok-session"); assert.equal(run.usage.total_tokens, 40);
+  const resumed = await reserve(f, { backend: "grok", resume: first.result.runId });
+  const command = backendCommand(readAsk(resumed.directory), resumed.directory, f.repo);
+  assert.equal(command.args[command.args.indexOf("--resume") + 1], "grok-session");
+  await assert.rejects(reserve(f, { backend: "grok", resume: first.result.runId }), /still running/);
+  const denied = await runAskJob(resumed.directory, { env: f.env, spawnBackend: backendFake(({ child }) => finish(child, JSON.stringify({ answer: "", sessionId: "grok-session", stopReason: "cancelled" }), "denied: fixture approval", 3)) });
+  assert.equal(denied.status, "denied"); assert.equal(denied.session, "grok-session");
+  assert.equal(fs.readFileSync(path.join(resumed.directory, "answer.txt"), "utf8"), "");
+  assert.match((await callTool("fleet_transcript", { runId: first.result.runId }, { env: f.env })).value, /stopReason.*end_turn/);
+  const codex = await reserve(f);
+  await assert.rejects(reserve(f, { backend: "grok", resume: codex.result.runId }), /earlier grok/);
+  for (const key of ["readOnly", "addDirs", "jsonSchema"]) assert.throws(() => validateAsk({ backend: "grok", prompt: "read", [key]: key === "readOnly" ? true : key === "addDirs" ? [] : "{}" }), /only/);
+});
+for (const [backend, cap] of [["grok", 4], ["api", 8]]) {
+  test(`${backend} concurrent starts enforce cap ${cap}`, async t => {
+    const f = fixture(t);
+    const results = await Promise.allSettled(Array.from({ length: cap + 2 }, () => reserve(f, { backend })));
+    assert.equal(results.filter(r => r.status === "fulfilled").length, cap);
+    assert.ok(results.filter(r => r.status === "rejected").every(r => r.reason.message.includes(`runs ${cap} jobs at once`)));
+  });
+}
+test("API ask records actual model, reasoning, spend and every terminal outcome", async t => {
+  const f = fixture(t);
+  for (const key of ["cwd", "effort", "readOnly", "addDirs", "jsonSchema", "resume"]) {
+    assert.throws(() => validateAsk({ backend: "api", prompt: "hello", [key]: key === "cwd" ? f.root : "not-applicable" }), /only/);
+  }
+  await assert.rejects(reserve(f, { backend: "api", model: "paid/model" }), /needs maxCostUsd/);
+  const ids = [];
+  for (const [outcome, code] of [["done", 0], ["empty", 4], ["failed", 1], ["denied", 3], ["rate_limited", 5], ["daily_limit", 5]]) {
+    const ask = await reserve(f, { backend: "api", maxTokens: 42 });
+    ids.push(ask.result.runId);
+    const run = await runAskJob(ask.directory, { env: f.env, spawnBackend: backendFake(({ args, child }) => {
+      assert.ok(args.includes("api-run")); assert.ok(args.includes("--json"));
+      assert.equal(args[args.indexOf("--provider") + 1], "openrouter");
+      assert.equal(args[args.indexOf("--max-tokens") + 1], "42");
+      finish(child, JSON.stringify({ outcome, answer: outcome === "done" ? "answer" : "", reasoning: "separate thinking", requestedModel: "openrouter/free", model: "vendor/actual:free", provider: "openrouter", free: true, usage: { cost: 0.01 }, costUsd: 0.01, overCap: false }), "", code);
+    }) });
+    assert.equal(run.status, outcome); assert.equal(run.model, "vendor/actual:free"); assert.equal(run.requestedModel, "openrouter/free");
+    assert.equal(run.costUsd, 0.01); assert.equal(fs.readFileSync(path.join(ask.directory, "reasoning.txt"), "utf8"), "separate thinking");
+    const [waited] = await waitRuns([ask.result.runId], { env: f.env, timeout: 0 }); assert.equal(waited.status, outcome);
+    assert.equal(await cli(["wait", ask.result.runId], { env: f.env, print() {} }), outcome === "done" ? 0 : 1);
+  }
+  const history = (await callTool("fleet_runs", { limit: 1, backend: "codex" }, { env: f.env })).value;
+  assert.equal(history.runs.length, 0); assert.ok(Math.abs(history.spendUsd - 0.06) < 1e-9);
+  const apiHistory = (await callTool("fleet_runs", { backend: "api", limit: 1 }, { env: f.env })).value;
+  assert.equal(apiHistory.runs[0].free, true); assert.equal(apiHistory.runs[0].costUsd, 0.01);
+  const first = runDirectory(f.dataDir, ids[0]);
+  atomicJson(path.join(first, "run.json"), { ...readAsk(first), provider: "other-provider" });
+  f.env.FAKE_PROVIDER_KEY = randomUUID();
+  const accounts = (await callTool("fleet_accounts", {}, { env: f.env, apiOptions: { keyReader: async () => f.env.FAKE_PROVIDER_KEY, fetch: async () => ({ status: 200, text: async () => '{"data":{"limit":10,"limit_remaining":9}}' }) } })).value;
+  assert.ok(Math.abs(accounts.find(a => a.backend === "api").spendUsd - 0.05) < 1e-9);
+  assert.ok(!JSON.stringify(accounts).includes(f.env.FAKE_PROVIDER_KEY));
+  const badExit = await reserve(f, { backend: "api" });
+  const failed = await runAskJob(badExit.directory, { env: f.env, spawnBackend: backendFake(({ child }) => finish(child, '{"outcome":"done","answer":"premature answer"}', "", 1)) });
+  assert.equal(failed.status, "failed");
+});
+test("historical transcripts remain readable without toolkit config, and models CLI uses injected catalog", async t => {
+  const f = fixture(t), done = await reserve(f, { backend: "grok" });
+  await runAskJob(done.directory, { env: f.env, spawnBackend: backendFake(({ child }) => finish(child, '{"answer":"saved answer","sessionId":"saved-session","stopReason":"end_turn"}')) });
+  const output = [];
+  assert.equal(await cli(["models", "--free", "--n", "1"], { env: f.env, print: s => output.push(s), apiOptions: { fetch: async () => ({ status: 200, text: async () => '{"data":[{"id":"vendor/model:free","context_length":1000,"pricing":{"prompt":"0","completion":"0"},"architecture":{"output_modalities":["text"]}}]}' }) } }), 0);
+  assert.deepEqual(output, ["vendor/model:free"]);
+  fs.unlinkSync(path.join(f.env.AGENT_TOOLKIT_HOME, "config.json"));
+  assert.match((await callTool("fleet_transcript", { runId: done.result.runId }, { env: f.env })).value, /saved answer/);
+  assert.equal((await callTool("fleet_status", { runId: done.result.runId }, { env: f.env })).value.status, "done");
 });
 const subprocess = spawnSync(process.execPath, ["-e", ""], { windowsHide: true });
 test("detached worker survives launcher and writes results using only fake toolkit runners", { skip: subprocess.error ? `child processes unavailable: ${subprocess.error.code}` : false, timeout: 15_000 }, async t => {

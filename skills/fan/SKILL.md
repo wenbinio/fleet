@@ -5,19 +5,25 @@ description: Send one read-only prompt to several backends or models at once (ar
 
 # One prompt, several answers
 
-Arguments: the targets, written `backend[:model]`, for example `agy:gemini-3.8-flash-low agy:claude-sonnet-4-6
-codex:sol deepseek:deepseek-v4-pro`. With no targets, use three agy jobs on `gemini-3.8-flash-low`.
+Arguments: the targets, written `backend[:model]`, for example `agy:gemini-3.8-flash-low grok codex:sol
+api:free api:free api:free`. With no targets, use three free api models from different vendors
+(`node "<fleet.mjs>" models --free --n 3`; the path comes in any `fleet_ask` result's `wait` line).
 
-1. Write one grounded, **read-only** prompt in a file outside the repo. Every target gets the same prompt.
-   Codex targets get `readOnly: true`. agy is read-only by design and must never be asked for code. Its runner adds
-   the no-shell line, so keep the prompt about reading files.
-2. Call `fleet_ask` once per target. agy allows at most 4 jobs at once, and `fleet_ask` refuses a fifth.
+1. Write one grounded, **read-only** prompt. Every target gets the same prompt. Codex targets get
+   `readOnly: true`. agy and grok are read-only by design and must never be asked for code. api targets see only
+   the prompt text, so put the material into it.
+   - Free api models may log or train on what they get. **Never fan private material** (client work, school
+     documents, unreleased work) to them.
+   - A paid api model needs its exact id, `maxCostUsd` and a reason.
+2. Call `fleet_ask` once per target. agy and grok allow 4 live jobs each, and api allows 8; `fleet_ask` refuses
+   more than that.
 3. Start one background `wait` with every runId (`node "<fleet.mjs>" wait <id1> <id2> …`). Don't poll.
 4. Read each answer (the wait output, or `fleet_run`).
 
 ## Synthesize
 
 Keep each answer as written. Then give: where they agree, where they disagree, claims none of them supports, and
-the best-supported answer. Attribute every substantive difference to its target (backend and model). List failed
-targets: an agy `denied` did nothing (agy exits 0 on denials; the runner catches it), and an empty answer counts as
-a failure. Never fill a failed target's slot with a guess.
+the best-supported answer. Attribute every substantive difference to its target: backend and the model that
+actually answered (the free router picks one per call). List failed targets: a `denied` agy or grok job did nothing
+(both exit 0 on refusals; the runner catches it). An `empty`, `rate_limited` or `daily_limit` api job is a failure
+too; never refill its slot with a paid model or a guess. Give the total api cost.

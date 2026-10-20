@@ -5,7 +5,7 @@ import { constants as fsConstants, promises as fsp } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
-import { startAsk, listRuns, runDirectory, kindOf, readAsk, answerOf, capText, eventsFile, BACKENDS } from "../runner/lib/jobs.mjs";
+import { startAsk, listRuns, runDirectory, kindOf, readAsk, answerOf, capText, transcriptSource, BACKENDS } from "../runner/lib/jobs.mjs";
 import { loadToolkit } from "../runner/lib/toolkit-link.mjs";
 import { finalText } from "../runner/ask-job.mjs";
 
@@ -19,7 +19,7 @@ const TRUNCATION_NOTE = "\n\n[Transcript truncated to 40000 characters.]";
 const str = { type: "string" };
 const runSchema = objectSchema({ runId: str }, ["runId"]);
 export const TOOLS = [
-  { name: "fleet_ask", description: "Start a Codex, agy or DeepSeek job and return its wait command.", inputSchema: objectSchema({ backend: { enum: BACKENDS }, prompt: str, promptFile: str, cwd: str, model: str, effort: { enum: ["low", "medium", "high", "xhigh"] }, readOnly: { type: "boolean" }, addDirs: { type: "array", items: str }, jsonSchema: str, resume: str }, ["backend"]) },
+  { name: "fleet_ask", description: "Start a backend job and return its wait command.", inputSchema: objectSchema({ backend: { enum: BACKENDS }, prompt: str, promptFile: str, cwd: str, model: str, effort: str, readOnly: { type: "boolean" }, addDirs: { type: "array", items: str }, jsonSchema: str, resume: str, provider: str, maxTokens: { type: "integer", minimum: 1 }, maxCostUsd: { type: "number", minimum: 0 }, system: { type: "string", description: "System-prompt file path." } }, ["backend"]) },
   { name: "fleet_runs", description: "List recent jobs, batches and delegates.", inputSchema: objectSchema({ limit: { type: "integer", minimum: 1, default: 20 }, backend: { enum: BACKENDS } }) },
   { name: "fleet_run", description: "Read one run's results and answer.", inputSchema: runSchema },
   { name: "fleet_transcript", description: "Read a run or batch task transcript.", inputSchema: objectSchema({ runId: str, taskId: str }, ["runId"]) },
@@ -242,7 +242,7 @@ async function eventBeats(file, last) {
   return (last ? lines.slice(-last) : lines).map(line => { try { return eventBeat(JSON.parse(line)); } catch { return `invalid event: ${oneLine(line)}`; } });
 }
 
-export async function callTool(name, rawArguments, { env = process.env, dataDir, start = startAsk } = {}) {
+export async function callTool(name, rawArguments, { env = process.env, dataDir, start = startAsk, apiOptions = {} } = {}) {
   const args = rawArguments === undefined ? {} : requireObject(rawArguments, "arguments");
   dataDir ??= await resolveDataDir({ env });
   const tool = TOOLS.find(tool => tool.name === name);
@@ -250,9 +250,17 @@ export async function callTool(name, rawArguments, { env = process.env, dataDir,
   requireOnlyKeys(args, Object.keys(tool.inputSchema.properties));
   if (name === "fleet_ask") return { value: await start(args, { env, dataDir }), json: true };
   if (name === "fleet_accounts") {
-    const { toolkit } = await loadToolkit({ env });
-    const value = await Promise.all(["codex", "agy", "dsh"].map(name => toolkit.signInStatus(name, { env })));
-    return { value, json: true };
+    const { repo, toolkit } = await loadToolkit({ env });
+    const api = await import(pathToFileURL(path.join(repo, "lib", "api.mjs")).href);
+    const [value, history] = await Promise.all([
+      Promise.all(["codex", "agy", "dsh", "grok"].map(name => toolkit.signInStatus(name, { env }))),
+      listRuns(dataDir, { backend: "api", limit: Number.MAX_SAFE_INTEGER }),
+    ]);
+    const accounts = await Promise.all(api.providers({ env }).map(async service => ({
+      ...await api.accountStatus(service, { ...apiOptions, env }),
+      spendUsd: history.runs.filter(run => run.provider === service.name).reduce((sum, run) => sum + (run.costUsd ?? 0), 0),
+    })));
+    return { value: [...value, ...accounts], json: true };
   }
   if (name === "fleet_runs") return { value: await listRuns(dataDir, args), json: true };
   const directory = runDirectory(dataDir, requireString(args.runId, "runId"));
@@ -275,15 +283,17 @@ export async function callTool(name, rawArguments, { env = process.env, dataDir,
     if (kind === "delegate") return { value: await delegateStatus(dataDir, directory), json: true };
     if (kind !== "ask") throw new Error("status is for ask and delegate runs; use fleet_run for batches");
     const run = readAsk(directory);
-    const tail = run.backend === "agy" ? await readTail(path.join(directory, "answer.txt"), 2000) : "";
-    const beats = run.backend === "agy" ? (tail ? [oneLine(tail)] : []) : await eventBeats(await eventsFile(directory, run, { env }), 10);
+    const source = await transcriptSource(directory, run, { env });
+    const tail = source.format === "text" ? await readTail(path.join(directory, "answer.txt"), 2000) : "";
+    const beats = source.format === "text" ? (tail ? [oneLine(tail)] : []) : await eventBeats(source.file, 10);
     return { value: { runId: run.runId, backend: run.backend, model: run.model, status: run.status, elapsedSeconds: Math.max(0, Math.floor((Date.parse(run.endedAt ?? new Date().toISOString()) - Date.parse(run.startedAt)) / 1000)), beats: beats.slice(-10) }, json: true };
   }
   if (name === "fleet_transcript") {
     if (kind === "batch") return { value: await fleetTranscript(dataDir, directory, requireString(args.taskId, "taskId")), json: false };
     if (args.taskId !== undefined) throw new Error("taskId is for batch runs only");
     const run = kind === "ask" ? readAsk(directory) : null;
-    const text = run?.backend === "agy" ? `Prompt:\n${await fsp.readFile(path.join(directory, "prompt.txt"), "utf8")}\n\nAnswer:\n${answerOf(directory)}` : (await eventBeats(kind === "delegate" ? path.join(directory, "events.jsonl") : await eventsFile(directory, run, { env }))).join("\n");
+    const source = run ? await transcriptSource(directory, run, { env }) : { format: "events", file: path.join(directory, "events.jsonl") };
+    const text = source.format === "text" ? `Prompt:\n${await fsp.readFile(path.join(directory, "prompt.txt"), "utf8")}\n\nAnswer:\n${answerOf(directory)}${source.reasoning ? "\n\nReasoning:\n" + await readTail(path.join(directory, "reasoning.txt"), 80_000) : ""}${source.details ? "\n\n" + JSON.stringify(source.details) : ""}` : (await eventBeats(source.file)).join("\n");
     return { value: capText(text), json: false };
   }
 }
@@ -312,7 +322,7 @@ async function handleMessage(message) {
     result(message.id, {
       protocolVersion: message.params?.protocolVersion ?? DEFAULT_PROTOCOL_VERSION,
       capabilities: { tools: {} },
-      serverInfo: { name: "fleet", version: "0.7.0" },
+      serverInfo: { name: "fleet", version: "0.8.0" },
     });
     return;
   }

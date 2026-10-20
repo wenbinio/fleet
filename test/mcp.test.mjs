@@ -113,7 +113,7 @@ test("MCP server lists runs and queues only non-terminal delegate steering", { t
 
   const runs = await rpc.request({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "fleet_runs", arguments: {} } });
   assert.equal(runs.result.isError, false);
-  assert.equal(JSON.parse(runs.result.content[0].text).find(run => run.kind === "batch").runId, runId);
+  assert.equal(JSON.parse(runs.result.content[0].text).runs.find(run => run.kind === "batch").runId, runId);
 
   const steered = await rpc.request({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "fleet_steer", arguments: { runId: activeDelegate, text: "Please add the edge case." } } });
   assert.equal(steered.result.isError, false);
