@@ -192,9 +192,9 @@ export const ADAPTERS = {
     transcript: textTranscript,
   },
   chatgpt: {
-    defaults: { model: "strongest" }, allowed: ["files", "model", "timeout"], maxLive: 1, json: true,
-    validate(opts) { if (opts.timeout !== undefined && (!Number.isFinite(opts.timeout) || opts.timeout <= 0)) throw new Error("timeout must be positive seconds"); },
-    command: (run, { directory, repo }) => ({ exe: process.execPath, args: [path.join(repo, "lib", "webchat", "chatgpt.mjs"), "ask", prompt(directory), ...(run.files?.length ? ["--files", ...run.files] : []), "--model", run.model, ...(run.timeout !== undefined ? ["--timeout", String(run.timeout)] : []), "--out", path.join(directory, "answer.md")] }),
+    defaults: { model: "strongest", timeout: 1800 }, allowed: ["files", "model", "timeout", "keepChat"], maxLive: 1, json: true,
+    validate(opts) { if (opts.keepChat !== undefined && typeof opts.keepChat !== "boolean") throw new Error("keepChat must be a boolean"); if (opts.timeout !== undefined && (!Number.isFinite(opts.timeout) || opts.timeout <= 0)) throw new Error("timeout must be positive seconds"); },
+    command: (run, { directory, repo }) => ({ exe: process.execPath, args: [path.join(repo, "lib", "webchat", "chatgpt.mjs"), "ask", prompt(directory), ...(run.files?.length ? ["--files", ...run.files] : []), "--model", run.model, ...(run.timeout !== undefined ? ["--timeout", String(run.timeout)] : []), ...(run.keepChat ? ["--keep-chat"] : []), "--out", path.join(directory, "answer.md")] }),
     stderrLine(line) {
       const change = ADAPTERS.advisor.stderrLine(line);
       return change?.status === "waiting_for_lok" ? { ...change, notice: "A ChatGPT human verification check is waiting in a Chrome window for Lok" } : change;

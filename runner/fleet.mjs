@@ -14,6 +14,7 @@ export async function cli(argv, { env = process.env, print = console.log, warn =
     const names = { backend: "backend", prompt: "prompt", "prompt-file": "promptFile", cwd: "cwd", model: "model", timeout: "timeout", effort: "effort", "add-dir": "addDirs", "json-schema": "jsonSchema", resume: "resume", provider: "provider", "max-tokens": "maxTokens", "max-cost": "maxCostUsd", system: "system", image: "images", file: "files", "out-dir": "outDir", engine: "engine", seconds: "seconds", takes: "takes", seed: "seed" };
     for (let i = 0; i < args.length; i++) {
       if (args[i] === "--read-only") { opts.readOnly = true; continue; }
+      if (args[i] === "--keep-chat") { opts.keepChat = true; continue; }
       if (args[i] === "--lok-asked") { opts.lokAsked = true; continue; }
       if (args[i] === "--music") { opts.music = true; continue; }
       const name = args[i].startsWith("--") && names[args[i].slice(2)];

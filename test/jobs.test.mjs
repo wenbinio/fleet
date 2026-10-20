@@ -462,22 +462,28 @@ test("ChatGPT adapter passes files/model/timeout and records every terminal outc
   const f = fixture(t), attachment = write(path.join(f.root, "context.txt"), "fixture context");
   for (const timeout of [0, -1, "30", Infinity]) assert.throws(() => validateAsk({ backend: "chatgpt", prompt: "hello", timeout }), /positive seconds/);
   for (const [outcome, code] of [["done", 0], ["failed", 1], ["signed_out", 3], ["limit", 4], ["paced", 5]]) {
-    const { directory, result } = await reserve(f, { backend: "chatgpt", files: [attachment], timeout: 90 });
+    const { directory, result } = await reserve(f, { backend: "chatgpt", files: [attachment], timeout: 90, keepChat: true });
     assert.equal(result.model, "strongest");
     const run = await runAskJob(directory, { env: f.env, spawnBackend: backendFake(({ args, child }) => {
       assert.equal(args[0], path.join(f.repo, "lib", "webchat", "chatgpt.mjs"));
-      assert.deepEqual(args.slice(1), ["ask", path.join(directory, "prompt.txt"), "--files", attachment, "--model", "strongest", "--timeout", "90", "--out", path.join(directory, "answer.md")]);
+      assert.deepEqual(args.slice(1), ["ask", path.join(directory, "prompt.txt"), "--files", attachment, "--model", "strongest", "--timeout", "90", "--keep-chat", "--out", path.join(directory, "answer.md")]);
       if (outcome === "done") write(path.join(directory, "answer.md"), "Web answer");
-      finish(child, JSON.stringify({ outcome, model: "GPT-6 Pro", answerChars: outcome === "done" ? 10 : 0, ...(outcome === "done" ? {} : { notice: "fixture reason", nextAt: "2026-10-20T15:00:00Z" }) }), "", code);
+      finish(child, JSON.stringify({ outcome, model: "GPT-6 · power 4/4 (Pro)", answerChars: outcome === "done" ? 10 : 0, ...(outcome === "done" ? {} : { notice: "fixture reason", nextAt: "2026-10-20T15:00:00Z" }) }), "", code);
     }) });
-    assert.equal(run.status, outcome); assert.equal(run.model, "GPT-6 Pro");
+    assert.equal(run.status, outcome); assert.equal(run.model, "GPT-6 · power 4/4 (Pro)");
     if (outcome !== "done") { assert.equal(run.error, "fixture reason"); assert.equal(run.notice, "fixture reason"); assert.equal(run.nextAt, "2026-10-20T15:00:00Z"); }
     assert.equal((await waitRuns([result.runId], { env: f.env }))[0].status, outcome);
     assert.equal(await cli(["wait", result.runId], { env: f.env, print() {} }), outcome === "done" ? 0 : 1);
   }
   const received = [];
-  await cli(["ask", "--backend", "chatgpt", "--prompt", "hi", "--timeout", "120"], { env: f.env, print() {}, start: async opts => { received.push(opts); return {}; } });
-  assert.equal(received[0].timeout, 120);
+  await cli(["ask", "--backend", "chatgpt", "--prompt", "hi", "--timeout", "120", "--keep-chat"], { env: f.env, print() {}, start: async opts => { received.push(opts); return {}; } });
+  assert.equal(received[0].timeout, 120); assert.equal(received[0].keepChat, true);
+  assert.deepEqual(TOOLS[0].inputSchema.properties.keepChat, { type: "boolean" });
+  for (const keepChat of ["true", 1, null]) assert.throws(() => validateAsk({ backend: "chatgpt", prompt: "hi", keepChat }), /keepChat must be a boolean/);
+  assert.equal(ADAPTERS.chatgpt.defaults.timeout, 1800);
+  const defaults = ADAPTERS.chatgpt.command({ ...ADAPTERS.chatgpt.defaults }, { directory: f.root, repo: f.repo });
+  assert.equal(defaults.args[defaults.args.indexOf("--timeout") + 1], "1800");
+  assert.ok(!defaults.args.includes("--keep-chat"));
   assert.equal(TOOLS[0].inputSchema.properties.timeout, undefined); // Brief keeps MCP options unchanged.
 });
 test("ChatGPT challenge state is live, counts toward cap, clears and preserves its answer", async t => {
@@ -623,9 +629,9 @@ test("ChatGPT menu reads fresh local state even on cache hits and never launches
   let [row] = await accounts(options);
   assert.equal(row.signedIn, null); assert.deepEqual(row.models.map(m => m.id), ["strongest"]);
   assert.equal(row.detail, "run: bin/chatgpt-web login, then check");
-  write(path.join(f.env.CHATGPT_WEB_HOME, "state.json"), JSON.stringify({ signedIn: true, checkedAt: "2026-10-20T10:00:00Z", models: ["Pro", "Thinking"], plan: "private fixture plan", prompts: ["2026-10-20T09:00:00Z"] }));
+  write(path.join(f.env.CHATGPT_WEB_HOME, "state.json"), JSON.stringify({ signedIn: true, checkedAt: "2026-10-20T10:00:00Z", models: ["GPT-6", "GPT-5.6 Sol"], plan: "private fixture plan", prompts: ["2026-10-20T09:00:00Z"] }));
   [row] = await accounts({ ...options, now: () => 2000, discover: () => assert.fail("menu cache should avoid rediscovery") });
-  assert.equal(row.signedIn, true); assert.deepEqual(row.models.map(m => m.id), ["Pro", "Thinking"]); assert.match(row.detail, /2026-10-20/);
+  assert.equal(row.signedIn, true); assert.deepEqual(row.models.map(m => m.id), ["GPT-6", "GPT-5.6 Sol"]); assert.match(row.detail, /2026-10-20/);
   assert.ok(row.models.every(m => m.cost === "subscription" && m.access === "text"));
   const cached = fs.readFileSync(path.join(f.dataDir, "model-menu.json"), "utf8");
   for (const value of ["signedIn", "private fixture plan", "2026-10-20T09:00:00Z", "checkedAt"]) assert.ok(!cached.includes(value));

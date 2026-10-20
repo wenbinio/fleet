@@ -1,6 +1,6 @@
 ---
 name: ask
-description: Run one job on codex, agy, grok, deepseek or api (OpenRouter) — args: backend, then the task — and report the answer honestly.
+description: Run one job on codex, agy, grok, deepseek, chatgpt, api (OpenRouter), image, sound or advisor — args: backend, then the task — and report the answer honestly.
 ---
 
 # One job on one backend
@@ -24,6 +24,9 @@ file outside the target repo and pass `promptFile`. Never ask a worker to run te
 - **grok is read-only too.** Its sandbox doesn't work on Windows, so the runner removes its shell and write tools.
   Default model `grok-4.7`. Each call costs tens of thousands of tokens, so ask everything in one prompt. To
   continue a session, pass `resume: <earlier grok runId>`. At most 4 at once.
+- **chatgpt** uses Lok's ChatGPT chat allowance (separate from Codex): always GPT-6 at full power, about a minute a
+  job, one at a time and at most 30 an hour. Text plus optional `files` to attach; no repo access. Use it for hard
+  questions worth the wait. `paced` or `limit` means wait; never work around a CAPTCHA (`waiting_for_lok`).
 - **deepseek** edits `cwd`. Models `deepseek-flash` (default) and `deepseek-v4-pro`.
 - **api** sends text only: no files, no `cwd`. Put what it needs into the prompt.
   - With no model it uses OpenRouter's **free** router and records which model answered.
