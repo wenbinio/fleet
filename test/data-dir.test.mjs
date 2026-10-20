@@ -19,7 +19,13 @@ function write(file,value) { fs.mkdirSync(path.dirname(file),{recursive:true}); 
 function comparableShellPath(value) {
   // Git Bash may render D:/repo as /d/repo. This comparison concerns filesystem
   // identity only; the guard itself uses the path directly, not a JS comparison.
-  let normalized = value.trim().replaceAll("\\", "/");
+  // It also mounts the Windows temp folder at /tmp, so ask cygpath when available.
+  let normalized = value.trim();
+  if (process.platform === "win32" && /^[\\/]/.test(normalized)) {
+    const windows = spawnSync("sh", ["-c", 'cygpath -w "$1"', "sh", normalized.replaceAll("\\", "/")], { encoding: "utf8" });
+    if (windows.status === 0 && windows.stdout.trim()) normalized = windows.stdout.trim();
+  }
+  normalized = normalized.replaceAll("\\", "/");
   if (process.platform === "win32") normalized = normalized.replace(/^\/([a-z])\//i, "$1:/");
   normalized = path.normalize(normalized);
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
