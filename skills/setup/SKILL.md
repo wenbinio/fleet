@@ -3,21 +3,24 @@ name: setup
 description: Install, repair or re-check the fleet plugin and its backends (args: optional backend to focus on); never logs in.
 ---
 
+Fleet root: use `${CLAUDE_PLUGIN_ROOT}` in Claude Code; elsewhere use the fleet root in your AGENTS.md fleet block. Set `FLEET_ROOT` to that path for the commands below.
+
 # Set up the fleet
 
 ## 1. Run the toolkit setup
 
-The agent-toolkit checkout is `repo` in `~/.agent-toolkit/config.json` (usually `D:/claude-work/agent-toolkit`).
+Run `node "${FLEET_ROOT}/install.mjs" --plan --json`, then `--apply` for automatic steps. Choose `--profile`, `--host`, `--on` and `--off` as needed. Pass `needs-you` commands to Lok; do not perform logins, keys, remote installers, sound downloads or PATH changes. Existing agent-toolkit users can keep running `node <repo>/setup.mjs --quiet`.
 
-```bash
-node <repo>/setup.mjs --quiet
+Codex asks approval for `fleet_ask`, `fleet_steer` and `fleet_interrupt`. Headless `codex exec` needs these
+per-tool settings:
+
+```toml
+mcp_servers.fleet.tools.fleet_ask.approval_mode = "approve"
+mcp_servers.fleet.tools.fleet_steer.approval_mode = "approve"
+mcp_servers.fleet.tools.fleet_interrupt.approval_mode = "approve"
 ```
 
-It is idempotent. It finds the tools, checks sign-ins without logging in, writes `~/.agent-toolkit/config.json`
-and fleet's config at `~/.claude/plugins/data/fleet-agent-toolkit/config.json` (the Codex path drifts on every
-Codex update; setup refreshes it), installs or updates `fleet@agent-toolkit`, and removes the plugins it replaced.
-Exit 0 with only totals means it's done. Pass every `warn`/`missing` row's fix to Lok in one line. After a plugin
-update, Claude Code needs a restart.
+Lok decides whether to approve them. The installer never writes approval overrides; pass this choice to him.
 
 ## 2. Check the backends
 
@@ -38,8 +41,8 @@ Only when dispatch or delegate fails with a sandbox or backend error, or Lok ask
 `codexExe`, `nodeExe`, `model` and `effort`:
 
 ```text
-"<nodeExe>" "${CLAUDE_PLUGIN_ROOT}/runner/fleet-runner.mjs" --smoke --codex-exe "<codexExe>" --model "<model>" --effort "<effort>"
-"<nodeExe>" "${CLAUDE_PLUGIN_ROOT}/runner/fleet-runner.mjs" --probe --codex-exe "<codexExe>" --model "<model>" --effort "<effort>" --isolation "<passing isolation>"
+"<nodeExe>" "${FLEET_ROOT}/runner/fleet-runner.mjs" --smoke --codex-exe "<codexExe>" --model "<model>" --effort "<effort>"
+"<nodeExe>" "${FLEET_ROOT}/runner/fleet-runner.mjs" --probe --codex-exe "<codexExe>" --model "<model>" --effort "<effort>" --isolation "<passing isolation>"
 ```
 
 The smoke must make a worker **run a shell command** and echo a fresh token; a text-only reply isn't enough. It

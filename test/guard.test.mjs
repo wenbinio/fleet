@@ -53,7 +53,7 @@ function runGuard({ command, cwd, dataDir }) {
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", GUARD],
       {
         cwd,
-        env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+        env: { ...process.env, HOME: path.dirname(dataDir), USERPROFILE: path.dirname(dataDir), FLEET_HOME: path.dirname(dataDir), AGENT_TOOLKIT_HOME: "", CLAUDE_PLUGIN_DATA: "ignored" },
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
       },
@@ -97,7 +97,7 @@ test(
 
     const repo = path.join(tempRoot, "repo");
     const unknownRepo = path.join(tempRoot, "unknown-repo");
-    const dataDir = path.join(tempRoot, "plugin-data");
+    const dataDir = path.join(tempRoot, "fleet");
     const approvedPath = path.join(dataDir, "approved.json");
     const sha = await initializeRepo(repo);
     const unknownSha = await initializeRepo(unknownRepo);

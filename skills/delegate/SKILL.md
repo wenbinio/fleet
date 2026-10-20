@@ -3,13 +3,15 @@ name: delegate
 description: Live, steerable coding in the current tree (args: backend, then the task; codex only), narrated as it goes; the user reviews the result.
 ---
 
+Fleet root: use `${CLAUDE_PLUGIN_ROOT}` in Claude Code; elsewhere use the fleet root in your AGENTS.md fleet block. Set `FLEET_ROOT` to that path for the commands below.
+
 # Delegate Live in the Current Tree
 
 Backend argument: only `codex` (it needs Codex's app-server thread). For agy, grok, deepseek or api use `fleet:ask`. Steer with `fleet_steer`, stop with `fleet_interrupt`, and watch with `fleet_status` (the `runId` is the delegate run folder's name).
 
 ## Configure
 
-1. Resolve `dataDir`: non-empty `${CLAUDE_PLUGIN_DATA}` verbatim; else `~/.claude/plugins/data/fleet-agent-toolkit/` (the folder setup writes). Never use the legacy `codex-fleet*` or `gemini-fleet*` folders.
+1. Resolve `dataDir`: `${FLEET_HOME:-~/.agent-toolkit}/fleet` (legacy `AGENT_TOOLKIT_HOME` is also supported). Host-specific `CLAUDE_PLUGIN_DATA` is ignored; old fleet data is retained and migrated on first use.
 2. Read `${dataDir}/config.json`. If missing, stop, run `/fleet:setup`, then re-read it. Never guess paths or authentication. Require absolute existing `codexExe` and `nodeExe`; if either path no longer exists (the Codex binary path is hash-versioned and drifts on app updates), re-run setup before continuing. Use configured `model` and `effort` verbatim.
 3. Delegate requires the app-server backend — it holds one live thread open. If `config.backend !== "app-server"`, stop and tell the user plainly: delegate is unavailable on this machine's backend; use `/fleet:dispatch` with one task (which works on either) or re-run `/fleet:setup` to re-probe. Do not launch the runner and let it die inside the transport.
 
@@ -46,10 +48,10 @@ Create `runDir = ${dataDir}/runs/delegate-<filesystem-safe-timestamp>` and write
 
 Spawn exactly one narrator wrapper agent **in the background** (the main session must stay free to receive and relay your steering). Use a general-purpose agent — do NOT use `fleet:codex-driver`, whose persona forbids prose and demands a structured-only final message, which is the opposite of narration. Give it a prompt containing all of these instructions:
 
-1. Launch `"<absolute nodeExe>" "${CLAUDE_PLUGIN_ROOT}/runner/delegate.mjs" --start "<runDir>/task.json"` **in the background**.
+1. Launch `"<absolute nodeExe>" "${FLEET_ROOT}/runner/delegate.mjs" --start "<runDir>/task.json"` **in the background**.
 2. Loop until `<runDir>/state.json` has status `done`, `interrupted`, or `failed`. Track the last consumed position and read only newly appended lines from `events.jsonl`. Render each meaningful beat as one line, **passing Codex's own words through verbatim rather than paraphrasing them** — agent messages and reasoning summaries as written, commands as `$ <command> → exit <code>`, file changes as paths, advisory verify as its result line. Your voice is for structure only; Codex's text is the content. Never dump raw JSON, never repeat unchanged state, and coalesce streaming `item/agentMessage/delta` events into the message they compose instead of emitting one line per delta.
 3. When `state.json` turns `awaiting-steer`, say so explicitly and name the window — the run idles for a bounded period and then finishes on its own, so the user knows they can redirect it now or let it wrap.
-4. Between event polls, check the wrapper's inbox for steering text relayed by the main session. Forward each instruction with `"<absolute nodeExe>" "${CLAUDE_PLUGIN_ROOT}/runner/delegate.mjs" --steer "<runDir>" "<text>"`. Sleep briefly, then repeat.
+4. Between event polls, check the wrapper's inbox for steering text relayed by the main session. Forward each instruction with `"<absolute nodeExe>" "${FLEET_ROOT}/runner/delegate.mjs" --steer "<runDir>" "<text>"`. Sleep briefly, then repeat.
 5. At terminal state, report files changed (the DELTA against the baseline you recorded), the advisory verification outcome (or that none ran), how the user can steer next time by telling the main session `tell it to ...`, and the run-directory path.
 
 The runner owns `events.jsonl`, `state.json`, and the `steer.inbox/` directory (one JSON file per message, written atomically); consume them through this contract rather than inventing another channel.

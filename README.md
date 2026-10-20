@@ -1,6 +1,48 @@
 # Fleet
 
-Version **0.6.2**
+Version **0.11.0**
+
+Fleet is self-contained: Claude Code gets its plugin, skills and merge guard; Codex, Grok, agy, Cursor and other
+MCP clients use the same server and run history. No agent-toolkit checkout is required after splitting this folder.
+
+```bash
+node install.mjs --plan --json
+node install.mjs --apply --profile lok --host claude --host codex --host grok
+node install.mjs --apply --profile minimal --host codex
+node install.mjs --apply --off grok
+node install.mjs --remove --host codex
+```
+
+`lok` enables all backends; `minimal` enables Codex and API only. Machine overrides live in
+`$FLEET_HOME/fleet/profile.json`. Disabled backends disappear from MCP schemas, menus and CLI help, and cannot
+start jobs. Removal unregisters selected hosts and removes owned links/managed rules; it keeps history unless
+`--purge` is explicit. Generic clients receive configuration and rule snippets to paste and remove manually.
+
+The installer reports `done`, `auto`, and `needs-you` steps. It never performs logins, remote tool installations,
+PATH changes or sound downloads. `--set-key openrouter` uses a hidden Windows secure prompt and DPAPI; elsewhere
+set `OPENROUTER_API_KEY` privately. `--with sound` prints separate SAO/MOSS venv and model download recipes.
+Remote agy/DeepSeek installer commands are not bundled: follow their official installer, then the reported login
+step. agy gets MCP only until a documented rules/skills location is available.
+Web backend checks read saved state/config and resolve Chrome's path; they never launch Chrome, including
+for a version query.
+
+`FLEET_HOME` defaults to `~/.agent-toolkit`; the old `AGENT_TOOLKIT_HOME` override still works. Runtime config,
+keys, browser profiles and model caches retain their existing locations. Shared fleet data is now `fleet/` within
+that home, regardless of `CLAUDE_PLUGIN_DATA`. First use copies the old
+`~/.claude/plugins/data/fleet-agent-toolkit` folder into an empty shared folder and keeps the original. Old run paths
+remain readable; the merge guard and verdict writer use legacy approvals when only the old store has them.
+Each MCP/CLI startup also copies any missing legacy run folders, leaving existing shared runs and originals intact.
+
+Every child process receives `FLEET_WORKER=1`. Workers retain read-only fleet tools but cannot start, steer or
+interrupt fleet jobs through MCP, and `fleet ask` refuses them. Codex workers disable fleet MCP per invocation
+unless user configuration is already ignored. Grok's bundled local documentation only describes persistent MCP
+disable commands, so its worker restriction uses the inherited environment without editing Grok configuration.
+
+Runtime layout: `core/lib/`, `core/bin/`, `core/deepseek/`, `backends/advisor/`, and bundled sound scripts under
+`backends/sound/`. Configured advisor and sound paths remain authoritative. In agent-toolkit, all old `bin/`,
+`lib/`, and advisor launch paths remain compatibility shims; root `setup.mjs` delegates its fleet steps here.
+
+The existing Claude dispatch workflow follows.
 
 **Claude plans, reviews, and integrates; Codex writes the code — and nothing lands until an adversarial reviewer independently re-runs the tests and passes it.**
 

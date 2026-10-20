@@ -11,7 +11,7 @@ import { ADAPTERS, ADVISOR_NOTICE } from "../runner/lib/adapters.mjs";
 import { accounts, parseModelIds, parseGrokModelIds } from "../runner/lib/accounts.mjs";
 import { atomicJson, startAsk, readAsk, runDirectory, liveStatus, waitRuns, validateAsk, listRuns, ASK_JOB } from "../runner/lib/jobs.mjs";
 import { runAskJob, backendCommand } from "../runner/ask-job.mjs";
-import { toolkitRepo } from "../runner/lib/toolkit-link.mjs";
+import { toolkitRepo, injectRuntime, CORE_ROOT } from "../runner/lib/runtime.mjs";
 import { callTool, TOOLS, eventBeat } from "../mcp/fleet-mcp.mjs";
 import { cli } from "../runner/fleet.mjs";
 
@@ -19,12 +19,12 @@ const grokModelsOutput = "You are not authenticated.\n\nDefault model: grok-4.7\
 const grokModelIds = ["grok-4.7", "grok-4.7-build-fast", "grok-4.6", "grok-4.5"];
 function write(file, text) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); return file; }
 function fixture(t) {
-  const scratch = fileURLToPath(new URL("../../../.test-tmp/", import.meta.url));
+  const scratch = fileURLToPath(new URL("../.test-tmp/", import.meta.url));
   fs.mkdirSync(scratch, { recursive: true });
   const root = fs.mkdtempSync(path.join(scratch, "fleet-ask-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 }));
-  const repo = path.join(root, "toolkit"), dataDir = path.join(root, "data"), runsDir = path.join(root, "toolkit-runs");
-  const env = { ...process.env, AGENT_TOOLKIT_HOME: path.join(root, "home"), CHATGPT_WEB_HOME: path.join(root, "chatgpt"), CLAUDE_PLUGIN_DATA: dataDir, FLEET_FAKE_RUNS: runsDir };
+  const repo = path.join(root, "toolkit"), dataDir = path.join(root, "home", "fleet"), runsDir = path.join(root, "toolkit-runs");
+  const env = { ...process.env, FLEET_WORKER: "", FLEET_HOME: "", HOME: root, USERPROFILE: root, AGENT_TOOLKIT_HOME: path.join(root, "home"), CHATGPT_WEB_HOME: path.join(root, "chatgpt"), CLAUDE_PLUGIN_DATA: dataDir, FLEET_FAKE_RUNS: runsDir };
   write(path.join(env.AGENT_TOOLKIT_HOME, "config.json"), JSON.stringify({ repo, providers: [{name:"openrouter",kind:"openai",baseUrl:"https://openrouter.invalid/api/v1",keyEnv:"FAKE_PROVIDER_KEY"}] }));
   write(path.join(repo, "lib/toolkit.mjs"), `
     import fs from "node:fs"; import path from "node:path";
@@ -33,15 +33,15 @@ function fixture(t) {
     export const capture = async () => ({ code: 0, stdout: "grok-4.7\\ngemini-3.8-flash-low", stderr: "" });
     export const signInStatus = async (name, {env}) => ({ backend: name === "dsh" ? "deepseek" : name, found: true, signedIn: name === "dsh" ? null : env.FAKE_SIGNED_OUT !== "1", detail: "fixture current account" });
   `);
-  write(path.join(repo, "lib/api.mjs"), `export * from ${JSON.stringify(new URL("../../../lib/api.mjs", import.meta.url).href)};`);
-  write(path.join(repo, "lib/media.mjs"), `export * from ${JSON.stringify(new URL("../../../lib/media.mjs", import.meta.url).href)};`);
-  write(path.join(repo, "lib/webchat/state.mjs"), `export * from ${JSON.stringify(new URL("../../../lib/webchat/state.mjs", import.meta.url).href)};`);
-  write(path.join(repo, "skills/gemini-advisor/advisor.mjs"), "// fake advisor; never executed");
+  write(path.join(repo, "lib/api.mjs"), `export * from ${JSON.stringify(new URL("../core/lib/api.mjs", import.meta.url).href)};`);
+  write(path.join(repo, "lib/media.mjs"), `export * from ${JSON.stringify(new URL("../core/lib/media.mjs", import.meta.url).href)};`);
+  write(path.join(repo, "lib/webchat/state.mjs"), `export * from ${JSON.stringify(new URL("../core/lib/webchat/state.mjs", import.meta.url).href)};`);
+  write(path.join(repo, "..", "backends/advisor/advisor.mjs"), "// fake advisor; never executed");
   // A complete fake runner can also be launched by the detached integration test.
   write(path.join(repo, "lib/runners.mjs"), `
     import fs from "node:fs"; import path from "node:path";
     import {pathToFileURL} from "node:url";
-    export {aliases} from ${JSON.stringify(new URL("../../../lib/runners.mjs", import.meta.url).href)};
+    export {aliases} from ${JSON.stringify(new URL("../core/lib/runners.mjs", import.meta.url).href)};
     if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
     const args = process.argv.slice(2), backend = args[0];
     if (backend === "codex-run") {
@@ -53,10 +53,12 @@ function fixture(t) {
     } else console.log("complete fake agy answer"); }
   `);
   write(path.join(repo, "bin/dsh-run.ps1"), `'{"type":"final","text":"complete fake DeepSeek answer","session_id":"fake-dsh"}'\nexit 0\n`);
+  injectRuntime(env, { repo });
   return { root, repo, dataDir, runsDir, env };
 }
 function detachedFake(calls = []) {
   return (exe, args, opts) => {
+    assert.equal(opts.env.FLEET_WORKER, "1");
     calls.push({ exe, args, opts });
     const child = new EventEmitter();
     child.pid = process.pid;
@@ -67,6 +69,7 @@ function detachedFake(calls = []) {
 }
 function backendFake(action) {
   return (exe, args, opts) => {
+    assert.equal(opts.env.FLEET_WORKER, "1", "every adapter subprocess is a fleet worker");
     const child = new EventEmitter();
     child.pid = 123456789; child.stdout = new PassThrough(); child.stderr = new PassThrough();
     queueMicrotask(() => action({ exe, args, opts, child }));
@@ -80,19 +83,19 @@ async function reserve(f, opts = {}) {
 function finish(child, stdout = "", stderr = "", code = 0) {
   child.stdout.end(stdout); child.stderr.end(stderr); child.emit("close", code);
 }
-test("toolkit discovery uses config and returns an actionable missing error", t => {
+test("fleet runtime is self-contained and explicit fake injection is isolated", t => {
   const f = fixture(t);
   assert.equal(toolkitRepo({ env: f.env }), f.repo);
   fs.unlinkSync(path.join(f.repo, "lib/runners.mjs"));
-  assert.throws(() => toolkitRepo({ env: f.env }), /agent-toolkit not found: run node setup.mjs/);
+  assert.equal(toolkitRepo({ env: { ...f.env } }), CORE_ROOT);
 });
 test("ask validates backend options, prompt exclusivity and absolute directories", t => {
   const f = fixture(t), valid = { backend: "codex", prompt: "hello", cwd: f.root };
-  for (const changes of [{ backend: "other" }, { promptFile: path.join(f.root, "missing") }, { prompt: undefined }, { cwd: "." }, { effort: "max" }, { readOnly: "yes" }, { addDirs: "dir" }, { jsonSchema: "{}" }, { unknown: true }]) assert.throws(() => validateAsk({ ...valid, ...changes }));
-  for (const key of ["effort", "readOnly", "resume"]) assert.throws(() => validateAsk({ backend: "agy", prompt: "hello", [key]: "x" }), /codex(?: or grok)?(?: or image)? only/);
-  assert.throws(() => validateAsk({ backend: "deepseek", prompt: "hello", cwd: f.root, model: "other" }), /invalid deepseek model/);
-  assert.throws(() => validateAsk({ backend: "deepseek", prompt: "hello", cwd: f.root, addDirs: [] }), /codex or agy only/);
-  assert.doesNotThrow(() => validateAsk({ backend: "agy", prompt: "hello", jsonSchema: "{}" }));
+  for (const changes of [{ backend: "other" }, { promptFile: path.join(f.root, "missing") }, { prompt: undefined }, { cwd: "." }, { effort: "max" }, { readOnly: "yes" }, { addDirs: "dir" }, { jsonSchema: "{}" }, { unknown: true }]) assert.throws(() => validateAsk({ ...valid, ...changes }, { env: f.env }));
+  for (const key of ["effort", "readOnly", "resume"]) assert.throws(() => validateAsk({ backend: "agy", prompt: "hello", [key]: "x" }, { env: f.env }), /codex(?: or grok)?(?: or image)? only/);
+  assert.throws(() => validateAsk({ backend: "deepseek", prompt: "hello", cwd: f.root, model: "other" }, { env: f.env }), /invalid deepseek model/);
+  assert.throws(() => validateAsk({ backend: "deepseek", prompt: "hello", cwd: f.root, addDirs: [] }, { env: f.env }), /codex or agy only/);
+  assert.doesNotThrow(() => validateAsk({ backend: "agy", prompt: "hello", jsonSchema: "{}" }, { env: f.env }));
 });
 test("start returns immediately with durable prompt, detached worker and PID handoff", async t => {
   const f = fixture(t), calls = [];
@@ -314,7 +317,7 @@ test("Grok success, denied and resume preserve session and block duplicate live 
   assert.match((await callTool("fleet_transcript", { runId: first.result.runId }, { env: f.env })).value, /stopReason.*end_turn/);
   const codex = await reserve(f);
   await assert.rejects(reserve(f, { backend: "grok", resume: codex.result.runId }), /earlier grok/);
-  for (const key of ["readOnly", "addDirs", "jsonSchema"]) assert.throws(() => validateAsk({ backend: "grok", prompt: "read", [key]: key === "readOnly" ? true : key === "addDirs" ? [] : "{}" }), /only/);
+  for (const key of ["readOnly", "addDirs", "jsonSchema"]) assert.throws(() => validateAsk({ backend: "grok", prompt: "read", [key]: key === "readOnly" ? true : key === "addDirs" ? [] : "{}" }, { env: f.env }), /only/);
 });
 for (const [backend, cap] of [["grok", 4], ["api", 8]]) {
   test(`${backend} concurrent starts enforce cap ${cap}`, async t => {
@@ -327,7 +330,7 @@ for (const [backend, cap] of [["grok", 4], ["api", 8]]) {
 test("API ask records actual model, reasoning, spend and every terminal outcome", async t => {
   const f = fixture(t);
   for (const key of ["cwd", "effort", "readOnly", "addDirs", "jsonSchema", "resume"]) {
-    assert.throws(() => validateAsk({ backend: "api", prompt: "hello", [key]: key === "cwd" ? f.root : "not-applicable" }), /only/);
+    assert.throws(() => validateAsk({ backend: "api", prompt: "hello", [key]: key === "cwd" ? f.root : "not-applicable" }, { env: f.env }), /only/);
   }
   await assert.rejects(reserve(f, { backend: "api", model: "paid/model" }), /needs maxCostUsd/);
   const ids = [];
@@ -371,7 +374,7 @@ test("historical transcripts remain readable without toolkit config, and models 
 });
 function installSound(f) {
   const configFile = path.join(f.env.AGENT_TOOLKIT_HOME, "config.json");
-  const config = { ...JSON.parse(fs.readFileSync(configFile, "utf8")), soundVenv: path.join(f.root, "sao", "venv"), mossVenv: path.join(f.root, "moss", "venv") };
+  const config = { ...JSON.parse(fs.readFileSync(configFile, "utf8")), soundVenv: path.join(f.root, "sao", "venv"), mossVenv: path.join(f.root, "moss", "venv"), soundDir: path.join(f.root, "sao"), mossTools: path.join(f.root, "moss", "tools") };
   for (const venv of [config.soundVenv, config.mossVenv]) for (const file of ["Scripts/python.exe", "bin/python"]) write(path.join(venv, file), "fake python");
   for (const file of ["gen.py", "finish.py"]) write(path.join(f.root, "sao", file), "# fake");
   for (const file of ["moss_gen.py", "peak_norm.py"]) write(path.join(f.root, "moss", "tools", file), "# fake");
@@ -381,9 +384,9 @@ function installSound(f) {
 test("image validates refs, collects only new files with sizes, copies outputs and exposes them", async t => {
   const f = fixture(t), ref = write(path.join(f.root, "reference.png"), "reference"), outDir = path.join(f.root, "output");
   fs.mkdirSync(outDir);
-  assert.throws(() => validateAsk({ backend: "image", prompt: "draw", images: ["relative.png"] }), /absolute existing/);
-  assert.throws(() => validateAsk({ backend: "image", prompt: "draw", images: [path.join(f.root, "missing.png")] }), /absolute existing/);
-  assert.throws(() => validateAsk({ backend: "image", prompt: "draw", outDir: "." }), /absolute existing/);
+  assert.throws(() => validateAsk({ backend: "image", prompt: "draw", images: ["relative.png"] }, { env: f.env }), /absolute existing/);
+  assert.throws(() => validateAsk({ backend: "image", prompt: "draw", images: [path.join(f.root, "missing.png")] }, { env: f.env }), /absolute existing/);
+  assert.throws(() => validateAsk({ backend: "image", prompt: "draw", outDir: "." }, { env: f.env }), /absolute existing/);
   const { directory, result } = await reserve(f, { backend: "image", images: [ref], outDir });
   write(path.join(directory, "old.jpg"), "old");
   const run = await runAskJob(directory, { env: f.env, spawnBackend: backendFake(({ args, opts, child }) => {
@@ -460,7 +463,7 @@ test("advisor requires Lok, buffers waiting stderr, clears on challenge signal, 
 });
 test("ChatGPT adapter passes files/model/timeout and records every terminal outcome", async t => {
   const f = fixture(t), attachment = write(path.join(f.root, "context.txt"), "fixture context");
-  for (const timeout of [0, -1, "30", Infinity]) assert.throws(() => validateAsk({ backend: "chatgpt", prompt: "hello", timeout }), /positive seconds/);
+  for (const timeout of [0, -1, "30", Infinity]) assert.throws(() => validateAsk({ backend: "chatgpt", prompt: "hello", timeout }, { env: f.env }), /positive seconds/);
   for (const [outcome, code] of [["done", 0], ["failed", 1], ["signed_out", 3], ["limit", 4], ["paced", 5]]) {
     const { directory, result } = await reserve(f, { backend: "chatgpt", files: [attachment], timeout: 90, keepChat: true });
     assert.equal(result.model, "strongest");
@@ -479,7 +482,7 @@ test("ChatGPT adapter passes files/model/timeout and records every terminal outc
   await cli(["ask", "--backend", "chatgpt", "--prompt", "hi", "--timeout", "120", "--keep-chat"], { env: f.env, print() {}, start: async opts => { received.push(opts); return {}; } });
   assert.equal(received[0].timeout, 120); assert.equal(received[0].keepChat, true);
   assert.deepEqual(TOOLS[0].inputSchema.properties.keepChat, { type: "boolean" });
-  for (const keepChat of ["true", 1, null]) assert.throws(() => validateAsk({ backend: "chatgpt", prompt: "hi", keepChat }), /keepChat must be a boolean/);
+  for (const keepChat of ["true", 1, null]) assert.throws(() => validateAsk({ backend: "chatgpt", prompt: "hi", keepChat }, { env: f.env }), /keepChat must be a boolean/);
   assert.equal(ADAPTERS.chatgpt.defaults.timeout, 1800);
   const defaults = ADAPTERS.chatgpt.command({ ...ADAPTERS.chatgpt.defaults }, { directory: f.root, repo: f.repo });
   assert.equal(defaults.args[defaults.args.indexOf("--timeout") + 1], "1800");
@@ -551,7 +554,7 @@ for (const platform of ["win32", "linux"]) for (const engine of ["sao", "moss"])
 test("sound validates options, caps engines together, stops after failed/interrupted stage and requires audio", async t => {
   const f = fixture(t); installSound(f);
   const opts = { backend: "sound", prompt: "sound", seconds: 1 };
-  for (const change of [{ engine: "moss", music: true }, { seconds: 0.4 }, { seconds: 48 }, { seconds: "1" }, { takes: 0 }, { takes: 6 }, { seed: 1.5 }, { music: "true" }]) assert.throws(() => validateAsk({ ...opts, ...change }));
+  for (const change of [{ engine: "moss", music: true }, { seconds: 0.4 }, { seconds: 48 }, { seconds: "1" }, { takes: 0 }, { takes: 6 }, { seed: 1.5 }, { music: "true" }]) assert.throws(() => validateAsk({ ...opts, ...change }, { env: f.env }));
   const first = await reserve(f, { backend: "sound", seconds: 1 });
   await assert.rejects(reserve(f, { backend: "sound", engine: "moss", seconds: 1 }), /runs 1 jobs at once/);
   let calls = 0;
@@ -671,7 +674,9 @@ test("detached worker survives launcher and writes results using only fake toolk
   const f = fixture(t);
   const launcher = path.join(f.root, "launcher.mjs");
   const jobsURL = new URL("../runner/lib/jobs.mjs", import.meta.url).href;
-  write(launcher, `import {startAsk} from ${JSON.stringify(jobsURL)}; console.log(JSON.stringify(await startAsk({backend:"codex",prompt:"fake only",cwd:${JSON.stringify(f.root)}})));`);
+  const runtimeURL = new URL("../runner/lib/runtime.mjs", import.meta.url).href;
+  const worker = write(path.join(f.root, "fake-worker.mjs"), `import { injectRuntime } from ${JSON.stringify(runtimeURL)}; import {runAskJob} from ${JSON.stringify(new URL("../runner/ask-job.mjs", import.meta.url).href)}; injectRuntime(process.env, {repo:${JSON.stringify(f.repo)}}); await runAskJob(process.argv[2], {handoff:true});`);
+  write(launcher, `import {spawn} from "node:child_process"; import {injectRuntime} from ${JSON.stringify(runtimeURL)}; injectRuntime(process.env,{repo:${JSON.stringify(f.repo)}}); import {startAsk} from ${JSON.stringify(jobsURL)}; console.log(JSON.stringify(await startAsk({backend:"codex",prompt:"fake only",cwd:${JSON.stringify(f.root)}},{spawnJob:(exe,args,opts)=>spawn(exe,[${JSON.stringify(worker)},...args.slice(1)],opts)})));`);
   const result = spawnSync(process.execPath, [launcher], { env: f.env, encoding: "utf8", windowsHide: true, timeout: 5000 });
   assert.equal(result.status, 0, result.stderr);
   const { runId } = JSON.parse(result.stdout);

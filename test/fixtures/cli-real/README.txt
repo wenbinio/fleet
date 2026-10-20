@@ -1,0 +1,1 @@
+Real outputs captured 2026-10-21 on Lok's machine: codex-cli 0.163.0-alpha.10.2, grok 1.0.52, agy 1.4.3. fleet registered in codex and grok; agy has no fleet entry yet. codex had no legacy codex-fleet plugin/marketplace left (removed by hand).

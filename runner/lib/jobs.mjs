@@ -1,13 +1,15 @@
+import { assertEnabled } from "./profile.mjs";
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawnWorker as spawn } from "../../core/lib/worker.mjs";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { resolveDataDir } from "./data-dir.mjs";
+import { resolveDataDir, legacyDataDir } from "./data-dir.mjs";
 import { ADAPTERS, BACKENDS, ASK_KEYS, TERMINAL_STATUSES, LIVE_STATUSES } from "./adapters.mjs";
 export { BACKENDS, ASK_KEYS, TERMINAL_STATUSES } from "./adapters.mjs";
-import { toolkitRepo } from "./toolkit-link.mjs";
+import { toolkitRepo } from "./runtime.mjs";
+import { assertOrchestrator, workerEnv } from "../../core/lib/worker.mjs";
 
 export const FLEET_CLI = fileURLToPath(new URL("../fleet.mjs", import.meta.url));
 export const ASK_JOB = fileURLToPath(new URL("../ask-job.mjs", import.meta.url));
@@ -25,10 +27,13 @@ export function isInside(parent, candidate) {
 }
 export function runDirectory(dataDir, runId) {
   if (typeof runId !== "string" || !runId.trim()) throw new Error("runId is required");
-  const root = path.resolve(dataDir, "runs");
+  let root = path.resolve(dataDir, "runs");
+  const legacy = legacyDataDir(dataDir), oldRoot = legacy && path.resolve(legacy, "runs");
+  if (path.isAbsolute(runId) && oldRoot && path.dirname(path.resolve(runId)) === oldRoot) runId = path.basename(runId);
   if (!path.isAbsolute(runId) && (runId !== path.basename(runId) || runId.includes("/") || runId.includes("\\"))) throw new Error("runId must be a run directory name or an absolute path inside runs");
-  const candidate = path.resolve(root, runId);
+  let candidate = path.resolve(root, runId);
   if (!isInside(root, candidate)) throw new Error("runId must be inside the plugin runs directory");
+  if (!fs.existsSync(candidate) && oldRoot && !path.isAbsolute(runId) && fs.existsSync(path.join(oldRoot, runId))) { root = oldRoot; candidate = path.join(oldRoot, runId); }
   const resolvedRoot = fs.realpathSync(root), resolved = fs.realpathSync(candidate);
   if (!isInside(resolvedRoot, resolved)) throw new Error("runId must be inside the plugin runs directory");
   if (!fs.statSync(resolved).isDirectory()) throw new Error("runId must be a directory");
@@ -51,10 +56,11 @@ function absoluteDirectory(value, name) {
   nonempty(value, name);
   if (!path.isAbsolute(value) || !fs.statSync(value).isDirectory()) throw new Error(`${name} must be an absolute existing folder`);
 }
-export function validateAsk(opts) {
+export function validateAsk(opts, { env = process.env } = {}) {
   if (!opts || typeof opts !== "object" || Array.isArray(opts)) throw new Error("options must be an object");
   for (const key of Object.keys(opts)) if (!ASK_KEYS.includes(key)) throw new Error(`unexpected argument: ${key}`);
   if (!BACKENDS.includes(opts.backend)) throw new Error(`backend must be one of ${BACKENDS.join(", ")}`);
+  assertEnabled(opts.backend, { env });
   const adapter = ADAPTERS[opts.backend];
   for (const key of Object.keys(opts)) {
     if (opts[key] !== undefined && !["backend", "prompt", "promptFile", ...adapter.allowed].includes(key)) {
@@ -112,7 +118,8 @@ async function withStartLock(root, action) {
   try { return await action(); } finally { fs.rmSync(lock, { force: true }); }
 }
 export async function startAsk(opts, { env = process.env, dataDir, spawnJob = spawn } = {}) {
-  validateAsk(opts);
+  assertOrchestrator(env);
+  validateAsk(opts, { env });
   const repo = toolkitRepo({ env }), adapter = ADAPTERS[opts.backend];
   dataDir ??= await resolveDataDir({ env });
   const root = path.join(dataDir, "runs");
@@ -143,7 +150,7 @@ export async function startAsk(opts, { env = process.env, dataDir, spawnJob = sp
     const file = path.join(directory, "run.json");
     atomicJson(file, run);
     try {
-      const child = spawnJob(process.execPath, [ASK_JOB, path.resolve(directory)], { detached: true, windowsHide: true, stdio: "ignore", env });
+      const child = spawnJob(process.execPath, [ASK_JOB, path.resolve(directory)], { detached: true, windowsHide: true, stdio: "ignore", env: workerEnv(env) });
       await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
       run.pid = child.pid;
       atomicJson(file, run);
@@ -169,9 +176,12 @@ export function answerOf(directory, limit = 40_000, tail = false) {
 export async function listRuns(dataDir, { limit = 20, backend } = {}) {
   if (!Number.isInteger(limit) || limit < 1) throw new Error("limit must be a positive integer");
   if (backend !== undefined && !BACKENDS.includes(backend)) throw new Error("invalid backend");
-  let entries;
-  try { entries = fs.readdirSync(path.join(dataDir, "runs"), { withFileTypes: true }); }
-  catch (e) { if (e.code === "ENOENT") return { runs: [], spendUsd: 0 }; throw e; }
+  const entriesByName = new Map();
+  for (const location of [legacyDataDir(dataDir), dataDir].filter(Boolean)) {
+    try { for (const entry of fs.readdirSync(path.join(location, "runs"), { withFileTypes: true })) entriesByName.set(entry.name, entry); }
+    catch (e) { if (e.code !== "ENOENT") throw e; }
+  }
+  const entries = [...entriesByName.values()];
   const runs = []; let spendUsd = 0;
   for (const entry of entries.filter(e => e.isDirectory())) {
     try {

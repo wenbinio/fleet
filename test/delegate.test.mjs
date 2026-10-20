@@ -4,7 +4,7 @@ import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -13,6 +13,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
 const DELEGATE = path.join(ROOT, "runner", "delegate.mjs");
 const MOCK_APP_SERVER = path.join(HERE, "mock-app-server.mjs");
+const STEP_TIMEOUT_MS = 30_000;
 
 async function run(file, args, options = {}) {
   try {
@@ -20,6 +21,7 @@ async function run(file, args, options = {}) {
       encoding: "utf8",
       maxBuffer: 4 * 1024 * 1024,
       windowsHide: true,
+      timeout: STEP_TIMEOUT_MS,
       ...options,
     });
   } catch (error) {
@@ -41,7 +43,7 @@ async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, "utf8"));
 }
 
-async function waitFor(predicate, message, timeoutMs = 10_000) {
+async function waitFor(predicate, message, timeoutMs = STEP_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
   while (Date.now() < deadline) {
@@ -56,7 +58,7 @@ async function waitFor(predicate, message, timeoutMs = 10_000) {
   throw new Error(`${message}${lastError ? `: ${lastError.message}` : ""}`);
 }
 
-function waitForExit(child, stderr, timeoutMs = 10_000) {
+function waitForExit(child, stderr, timeoutMs = STEP_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     if (child.exitCode !== null || child.signalCode !== null) {
       resolve({ code: child.exitCode, signal: child.signalCode });
@@ -74,13 +76,15 @@ function waitForExit(child, stderr, timeoutMs = 10_000) {
   });
 }
 
-test("delegate streams events, consumes steering, and reuses its warm thread", { timeout: 30_000 }, async (t) => {
+test("delegate streams events, consumes steering, and reuses its warm thread", { timeout: STEP_TIMEOUT_MS * 10 }, async (t) => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "fleet-delegate-"));
   t.after(() => rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
   const repo = path.join(tempRoot, "repo");
   const runDir = path.join(tempRoot, "delegate-run");
   await mkdir(repo, { recursive: true });
+  await mkdir(runDir, { recursive: true });
+  await writeFile(path.join(runDir, "offset"), "0");
   await run("git", ["init"], { cwd: repo });
 
   const taskPath = path.join(tempRoot, "task.json");
@@ -97,12 +101,15 @@ test("delegate streams events, consumes steering, and reuses its warm thread", {
     runDir,
   }, null, 2), "utf8");
 
-  const child = spawn(process.execPath, [DELEGATE, "--start", taskPath], {
+  const child = spawn(process.execPath, ["--import", pathToFileURL(path.join(HERE, "mock-delegate-clock.mjs")).href, DELEGATE, "--start", taskPath], {
     cwd: ROOT,
     env: {
       ...process.env,
       DELEGATE_IDLE_TIMEOUT_MS: "1200",
       DELEGATE_POLL_MS: "20",
+      MOCK_DELEGATE_CLOCK: runDir,
+      MOCK_TURN_GATE_DIR: runDir,
+      MOCK_TURN_GATE_TIMEOUT_MS: String(STEP_TIMEOUT_MS * 4),
     },
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
@@ -116,12 +123,17 @@ test("delegate streams events, consumes steering, and reuses its warm thread", {
   });
 
   const eventsPath = path.join(runDir, "events.jsonl");
+  const readEvents = async () => (await readFile(eventsPath, "utf8")).trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
   const initialEventSize = await waitFor(async () => {
     if (!(await exists(eventsPath))) return 0;
+    const events = await readEvents();
+    if (!events.some(event => event.method === "item/started" && event.turnId === "mock-turn-1")) return 0;
+    assert.ok(!events.some(event => event.type === "turn"), "first turn remains active until released");
     const size = (await stat(eventsPath)).size;
     return size > 0 ? size : 0;
   }, "events.jsonl did not grow while delegate was active");
   assert.equal(child.exitCode, null, "events must be observable before the owner process exits");
+  await writeFile(path.join(runDir, "mock-turn-1.release"), "");
 
   const awaiting = await waitFor(async () => {
     const state = await readJson(path.join(runDir, "state.json"));
@@ -139,12 +151,14 @@ test("delegate streams events, consumes steering, and reuses its warm thread", {
   const acknowledgement = await run(process.execPath, [DELEGATE, "--steer", runDir, steeringText], { cwd: ROOT });
   assert.equal(JSON.parse(acknowledgement.stdout).action, "steer");
 
-  await waitFor(async () => {
+  const secondTurn = await waitFor(async () => {
     const state = await readJson(path.join(runDir, "state.json"));
-    if (state.turns < 2) return false;
-    const events = (await readFile(eventsPath, "utf8")).trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
-    return events.filter((event) => event.type === "turn").length >= 2;
-  }, "steered follow-up turn did not complete");
+    if (state.turns !== 2 || state.status !== "working") return false;
+    const events = await readEvents();
+    return events.some(event => event.method === "item/started" && event.turnId === "mock-turn-2") ? state : false;
+  }, "steered follow-up turn did not start");
+  assert.equal(secondTurn.threadId, awaiting.threadId);
+  assert.equal((await readEvents()).filter(event => event.type === "turn").length, 1, "second turn is still streaming");
   assert.match(await readFile(path.join(repo, "follow-up.txt"), "utf8"), /^steered\n$/);
 
   await waitFor(async () => {
@@ -156,8 +170,20 @@ test("delegate streams events, consumes steering, and reuses its warm thread", {
   const liveStatus = JSON.parse(statusResult.stdout);
   assert.equal(liveStatus.threadId, awaiting.threadId);
   assert.equal(liveStatus.turns, 2);
+  assert.equal(liveStatus.status, "working");
 
-  const outcome = await waitForExit(child, () => `${stdout}\n${stderr}`, 10_000);
+  await writeFile(path.join(runDir, "mock-turn-2.release"), "");
+  await waitFor(async () => {
+    const state = await readJson(path.join(runDir, "state.json"));
+    return state.status === "awaiting-steer" && state.turns === 2 &&
+      (await readEvents()).filter(event => event.type === "turn").length === 2 &&
+      await exists(path.join(runDir, "idle-clock-ready"));
+  }, "second turn did not complete and establish its idle deadline");
+  // Expire the normal idle tail only after all live assertions and both turns.
+  // Keep the existing 1200 ms policy; no dependency on child startup speed.
+  const exit = waitForExit(child, () => `${stdout}\n${stderr}`);
+  await writeFile(path.join(runDir, "offset"), "5000");
+  const outcome = await exit;
   assert.deepEqual(outcome, { code: 0, signal: null });
   const finalState = await readJson(path.join(runDir, "state.json"));
   assert.equal(finalState.status, "done");

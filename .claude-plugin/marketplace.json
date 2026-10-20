@@ -1,0 +1,14 @@
+{
+  "name": "agent-toolkit",
+  "owner": {
+    "name": "wenbinio"
+  },
+  "plugins": [
+    {
+      "name": "fleet",
+      "version": "0.11.0",
+      "source": "./",
+      "description": "Text, image, advisor and local sound jobs with one model menu, shared history and guarded integration."
+    }
+  ]
+}

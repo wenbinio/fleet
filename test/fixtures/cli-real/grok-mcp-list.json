@@ -1,0 +1,11 @@
+[
+  {
+    "command": "node",
+    "args": [
+      "D:\\claude-work\\agent-toolkit\\plugins\\fleet\\mcp\\fleet-mcp.mjs"
+    ],
+    "enabled": true,
+    "name": "fleet",
+    "scope": "user"
+  }
+]

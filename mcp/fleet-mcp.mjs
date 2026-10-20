@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { enabledBackends, assertEnabled } from "../runner/lib/profile.mjs";
+import { ADAPTERS } from "../runner/lib/adapters.mjs";
+import { assertOrchestrator } from "../core/lib/worker.mjs";
 
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fsp } from "node:fs";
@@ -14,6 +17,7 @@ import { resolveDataDir } from "../runner/lib/data-dir.mjs";
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 const TERMINAL_STATUSES = new Set(["done", "interrupted", "failed"]);
 const TRANSCRIPT_LIMIT = 40_000;
+const WORKER_HIDDEN = new Set(["fleet_ask", "fleet_steer", "fleet_interrupt"]);
 const TRUNCATION_NOTE = "\n\n[Transcript truncated to 40000 characters.]";
 
 const str = { type: "string" };
@@ -242,10 +246,17 @@ async function eventBeats(file, last) {
   return (last ? lines.slice(-last) : lines).map(line => { try { return eventBeat(JSON.parse(line)); } catch { return `invalid event: ${oneLine(line)}`; } });
 }
 
+export function toolsFor({ env = process.env } = {}) {
+  const enabled = enabledBackends({ env });
+  const allowed = new Set(["backend", "prompt", "promptFile", ...enabled.flatMap(name => ADAPTERS[name].allowed)]);
+  return TOOLS.filter(tool => env.FLEET_WORKER !== "1" || !WORKER_HIDDEN.has(tool.name)).map(tool => ({ ...tool, inputSchema: { ...tool.inputSchema, properties: Object.fromEntries(Object.entries(tool.inputSchema.properties).filter(([key]) => tool.name !== "fleet_ask" || allowed.has(key)).map(([key, value]) => [key, key === "backend" ? { ...value, enum: enabled } : value])) } }));
+}
 export async function callTool(name, rawArguments, { env = process.env, dataDir, start = startAsk, apiOptions = {}, menuOptions = {} } = {}) {
+  if (WORKER_HIDDEN.has(name)) assertOrchestrator(env);
   const args = rawArguments === undefined ? {} : requireObject(rawArguments, "arguments");
   dataDir ??= await resolveDataDir({ env });
-  const tool = TOOLS.find(tool => tool.name === name);
+  if (name === "fleet_ask" || name === "fleet_accounts") assertEnabled(args.backend, { env });
+  const tool = toolsFor({ env }).find(tool => tool.name === name);
   if (!tool) throw new Error(`unknown tool: ${name}`);
   requireOnlyKeys(args, Object.keys(tool.inputSchema.properties));
   if (name === "fleet_ask") return { value: await start(args, { env, dataDir }), json: true };
@@ -312,12 +323,12 @@ async function handleMessage(message) {
     result(message.id, {
       protocolVersion: message.params?.protocolVersion ?? DEFAULT_PROTOCOL_VERSION,
       capabilities: { tools: {} },
-      serverInfo: { name: "fleet", version: "0.10.1" },
+      serverInfo: { name: "fleet", version: "0.11.0" },
     });
     return;
   }
   if (message.method === "tools/list") {
-    result(message.id, { tools: TOOLS });
+    result(message.id, { tools: toolsFor() });
     return;
   }
   if (message.method === "tools/call") {
@@ -339,6 +350,7 @@ async function handleMessage(message) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+await resolveDataDir();
 const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 for await (const line of input) {
   if (!line.trim()) continue;

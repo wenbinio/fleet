@@ -3,6 +3,8 @@ name: dispatch
 description: Verified code tasks (args: backend, then the tasks; codex only) in isolated worktrees with independent review and staged integration — one task or a parallel batch.
 ---
 
+Fleet root: use `${CLAUDE_PLUGIN_ROOT}` in Claude Code; elsewhere use the fleet root in your AGENTS.md fleet block. Set `FLEET_ROOT` to that path for the commands below.
+
 # Dispatch Fleet
 
 Plan the work, run the bundled fleet workflow, record its verdicts, and integrate only approved branches.
@@ -15,7 +17,7 @@ The Codex path drifts on every Codex update: if `codexExe` is missing, run `node
 
 ## Load configuration and inputs
 
-1. Resolve `dataDir`: non-empty `${CLAUDE_PLUGIN_DATA}` verbatim; else `~/.claude/plugins/data/fleet-agent-toolkit/` (the folder setup writes). Never use the legacy `codex-fleet*` or `gemini-fleet*` folders.
+1. Resolve `dataDir`: `${FLEET_HOME:-~/.agent-toolkit}/fleet` (legacy `AGENT_TOOLKIT_HOME` is also supported). Host-specific `CLAUDE_PLUGIN_DATA` is ignored; old fleet data is retained and migrated on first use.
 2. Read `config.json` from that directory. If it is missing, stop and run `/fleet:setup` first, then re-read it. Do not guess a Codex path or authentication mode. If the recorded `codexExe` no longer exists on disk (hash-versioned paths go stale on app updates), re-run setup discovery before dispatching. Pass `model`, `effort`, `isolation`, and optional `windowsSandbox` from config.json into the batch and driver prompts. Validate `isolation` as `plugins-off` (default when absent), `ignore-user-config`, or `none`, and `windowsSandbox` as `elevated` or `unelevated` when present. Unknown values are errors. `ignore-user-config` requires an explicit model; on app-server it falls back to plugins-off with a result note. Unelevated is a weaker sandbox; propagate it only when explicitly selected, never enable it silently.
 3. Require `repo` to name a git repository with at least one commit. Resolve `verify` to the full-project verification command and `tasks` to objects shaped like `{id, spec, verify?}`.
 4. Set `mode` from `authMode`: use `claude` when it is `none`, and `codex` for `subscription` or `api_key`. Pass through `codexExe` and `platform`. The workflow, not this skill, owns the Claude-only fallback pipeline.
@@ -39,7 +41,7 @@ Use the runner-first lifecycle for Codex mode, then converge on the SAME review 
 1. **Runner (normative for Codex mode when Node is available).** Use the runner only when `mode === 'codex'`, `codexExe` is an absolute existing file, and `nodeExe` is an absolute existing file. Select its `app-server` transport only when all of those conditions hold **and** setup recorded a current, compatible app-server probe (`config.backend === 'app-server'`); otherwise select the runner's `exec` transport. If the recorded probe is absent, failed, or stale for the current Codex/Node version, re-run setup before considering app-server compatible. Write a batch file to a temp path — `{repo, codexExe, backend, model, effort, isolation, windowsSandbox?, tasks, verify, timeoutMinutes}` — then run the whole dispatch phase in ONE command — **in the background** (`run_in_background`), never foreground: xhigh workers routinely run 3–10 minutes each and a foreground shell tool call times out at 10, orphaning the runner mid-batch. Act on the completion notification. Invoke the absolute `nodeExe` from config, never bare `node`:
 
    ```text
-   "<absolute nodeExe>" "${CLAUDE_PLUGIN_ROOT}/runner/fleet-runner.mjs" --batch <temp-batch.json>
+   "<absolute nodeExe>" "${FLEET_ROOT}/runner/fleet-runner.mjs" --batch <temp-batch.json>
    ```
 
    After the runner exits, delete the temporary batch file (the runner has already read it) — but write it inside `outDir` so `--cleanup` can still find it later. Read the runner's `results.json` payload.
@@ -80,7 +82,7 @@ Tee its events, write the transcript, and finish with StructuredOutput.`
 })
 ```
 
-The driver tees each `--json` event stream to `<task-id>.codex-events.jsonl` beside the worktree and distills it to `${CLAUDE_PLUGIN_DATA}/transcripts/<run>/<task-id>.md`. Preserve the non-ephemeral Codex session and collect `codexCommandsRun`, `filesPatched`, `sessionId`, and `transcriptPath` in structured output.
+The driver tees each `--json` event stream to `<task-id>.codex-events.jsonl` beside the worktree and distills it to `${dataDir}/transcripts/<run>/<task-id>.md`. Preserve the non-ephemeral Codex session and collect `codexCommandsRun`, `filesPatched`, `sessionId`, and `transcriptPath` in structured output.
 
 Run `codex exec --disable plugins -c mcp_servers.node_repl.enabled=false` in the foreground with an explicit timeout of at most 10 minutes; `run_in_background` is forbidden inside drivers. If that window expires, kill the timed-out process and use the session ID already emitted in the JSON stream to run `codex exec resume --disable plugins -c mcp_servers.node_repl.enabled=false -m <model> -c model_reasoning_effort="<effort>" <sessionId> "continue"` for at most one additional 10-minute foreground window. Keep model/effort pinned on every launch/resume. For `isolation: "ignore-user-config"`, replace the default isolation flags with `--ignore-user-config` and require a model; `none` omits them. If configured, append `-c windows.sandbox="<windowsSandbox>"` in every mode; otherwise leave the user's setting alone. If it is still unfinished, mark the task failed and report that it should be decomposed. Mechanical tasks may lower reasoning effort with `-c model_reasoning_effort=high`.
 
@@ -93,7 +95,7 @@ The driver's final action must always be StructuredOutput. On failure, interrupt
 Do all of the following after the run returns and before the first integration command. Never hand-write `approved.json` — the guard requires the derived `eligible` field and a repo key that matches its own canonicalization, and only the verdict-store helper produces both. For each reviewed `codex/<id>` branch, run ONE command:
 
 ```text
-"<absolute nodeExe>" "${CLAUDE_PLUGIN_ROOT}/scripts/verdict-store.mjs" write \
+"<absolute nodeExe>" "${FLEET_ROOT}/scripts/verdict-store.mjs" write \
   --store "${dataDir}/approved.json" \
   --repo "<repo>" \
   --branch "codex/<id>" \
@@ -112,7 +114,7 @@ Only branches whose current review verdict is `approve` may integrate. Park `nee
 
 ### `stage` (default)
 
-Use the checked temp-commit ladder and no other stage mechanism. Invoke the absolute `nodeExe` with `${CLAUDE_PLUGIN_ROOT}/scripts/stage-ladder.mjs`, `--repo <repo>`, `--verify <full-project-verify-command>`, and one `--branch codex/<id>` argument per approved branch in verdict order, then read its stdout JSON report. The helper leaves all integrated changes as one staged, verified, uncommitted diff at the original HEAD with no temporary fleet commits in history; it reports integrated and parked branches with reasons, removes integrated worktrees and branches, and keeps parked ones.
+Use the checked temp-commit ladder and no other stage mechanism. Invoke the absolute `nodeExe` with `${FLEET_ROOT}/scripts/stage-ladder.mjs`, `--repo <repo>`, `--verify <full-project-verify-command>`, and one `--branch codex/<id>` argument per approved branch in verdict order, then read its stdout JSON report. The helper leaves all integrated changes as one staged, verified, uncommitted diff at the original HEAD with no temporary fleet commits in history; it reports integrated and parked branches with reasons, removes integrated worktrees and branches, and keeps parked ones.
 
 This ladder also handles shared-file batches because each squash applies on top of the preceding temp commit.
 

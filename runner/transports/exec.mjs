@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawnWorker as spawn } from "../../core/lib/worker.mjs";
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import fsp from "node:fs/promises";

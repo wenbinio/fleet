@@ -1,0 +1,8 @@
+{
+  "backends": {"codex":true,"agy":false,"grok":false,"deepseek":false,"chatgpt":false,"api":true,"image":false,"advisor":false,"sound":false},
+  "hosts": ["claude"],
+  "rulings": {
+    "codex": "Implementation and review through the configured Codex account.",
+    "api": "Free models by default; never send private material. Paid requires an exact model ID, maxCostUsd and a reason."
+  }
+}

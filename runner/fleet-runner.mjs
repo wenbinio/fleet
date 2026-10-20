@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { spawnWorker as spawn } from "../core/lib/worker.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fsp, realpathSync } from "node:fs";
 import os from "node:os";

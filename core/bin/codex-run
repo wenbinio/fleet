@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# --ignore-user-config avoids Codex's computer-use helper, which Windows sandbox setup cannot open.
+set -euo pipefail
+export FLEET_WORKER=1
+exec node "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/lib/runners.mjs" codex-run "$@"

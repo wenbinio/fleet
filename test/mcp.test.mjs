@@ -65,7 +65,9 @@ function rpcClient(child) {
 }
 
 test("MCP server lists runs and queues only non-terminal delegate steering", { timeout: 20_000 }, async (t) => {
-  const dataDir = await mkdtemp(path.join(os.tmpdir(), "fleet-mcp-"));
+  const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "fleet-mcp-"));
+  const dataDir = path.join(temporaryHome, "fleet");
+  await mkdir(dataDir);
   const runId = "run-20260721T010203004Z";
   const runDir = path.join(dataDir, "runs", runId);
   const transcriptPath = path.join(runDir, "transcripts", "example.transcript.md");
@@ -88,9 +90,12 @@ test("MCP server lists runs and queues only non-terminal delegate steering", { t
   await writeFile(path.join(activeDelegate, "state.json"), JSON.stringify({ status: "awaiting-steer", turns: 1 }), "utf8");
   await writeFile(path.join(activeDelegate, "events.jsonl"), `${JSON.stringify({ type: "agentMessage", at: "2026-07-21T01:02:03.004Z", text: "Ready for direction" })}\n`, "utf8");
   await writeFile(path.join(doneDelegate, "state.json"), JSON.stringify({ status: "done", turns: 1 }), "utf8");
+  const lateLegacy = path.join(temporaryHome, ".claude/plugins/data/fleet-agent-toolkit/runs/late-at-startup");
+  await mkdir(lateLegacy, { recursive: true });
+  await writeFile(path.join(lateLegacy, "answer.txt"), "copied before any tool call", "utf8");
 
   const child = spawn(process.execPath, [SERVER], {
-    env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+    env: { ...process.env, FLEET_WORKER: "", HOME: path.dirname(dataDir), USERPROFILE: path.dirname(dataDir), FLEET_HOME: path.dirname(dataDir), AGENT_TOOLKIT_HOME: "", CLAUDE_PLUGIN_DATA: "ignored" },
     windowsHide: true,
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -101,11 +106,12 @@ test("MCP server lists runs and queues only non-terminal delegate steering", { t
   child.once("error", (error) => rpc.reject(error));
   t.after(async () => {
     if (child.exitCode === null && child.signalCode === null) child.kill();
-    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(temporaryHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   const initialized = await rpc.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "fixture-version" } });
   assert.equal(initialized.result.protocolVersion, "fixture-version");
+  assert.equal(await readFile(path.join(dataDir, "runs/late-at-startup/answer.txt"), "utf8"), "copied before any tool call");
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
 
   const listed = await rpc.request({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });

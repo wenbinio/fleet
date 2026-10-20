@@ -1,0 +1,14 @@
+# Local state and model downloads never belong in the standalone plugin.
+.test-tmp/
+node_modules/
+**/profile/
+**/secrets/
+*.dpapi
+*.log
+*.events.jsonl
+runs/
+cache/
+backends/sound/weights/
+**/venv/
+**/.venv/
+**/__pycache__/

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
+import { setTimeout as delay } from "node:timers/promises";
 
 const threads = new Map();
 const activeTurns = new Map();
@@ -25,6 +26,18 @@ function fail(id, code, message) {
 
 function notify(method, params) {
   send({ jsonrpc: "2.0", method, params, emittedAtMs: emittedAtMs++ });
+}
+
+async function awaitTurnRelease(turnId) {
+  const directory = process.env.MOCK_TURN_GATE_DIR;
+  if (!directory) return;
+  const release = path.join(directory, `${turnId}.release`);
+  const deadline = Date.now() + Number(process.env.MOCK_TURN_GATE_TIMEOUT_MS || 20_000);
+  while (true) {
+    try { await access(release); return; } catch (error) { if (error.code !== "ENOENT") throw error; }
+    if (Date.now() >= deadline) throw new Error(`test did not release ${turnId}`);
+    await delay(20);
+  }
 }
 
 function textFrom(params) {
@@ -189,6 +202,7 @@ async function handle(frame) {
     }
 
     if (!prompt.includes("MOCK_WAIT_FOR_INTERRUPT")) {
+      if (process.env.MOCK_TURN_GATE_DIR) await awaitTurnRelease(turnId);
       completeTurn({ threadId, turnId, messageId, finalText, status, error, prompt });
     }
     return;

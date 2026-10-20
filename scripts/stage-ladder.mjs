@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { spawnWorker as spawn } from "../core/lib/worker.mjs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 

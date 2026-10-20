@@ -1,0 +1,15 @@
+{
+  "backends": {"codex":true,"agy":true,"grok":true,"deepseek":true,"chatgpt":true,"api":true,"image":true,"advisor":true,"sound":true},
+  "hosts": ["claude","codex","grok"],
+  "rulings": {
+    "codex": "Astra builds; Sol reviews and researches; Luna checks given ground truth.",
+    "agy": "Read-only audits and second opinions; up to four jobs.",
+    "grok": "Read-only second opinions and audits.",
+    "deepseek": "Account-backed text and implementation work.",
+    "chatgpt": "Heavy questions, GPT-6 at full power in Temporary chat; paced, no retries; CAPTCHA goes to Lok.",
+    "api": "Free models by default; no private material to free models. Paid only by exact ID with maxCostUsd and a reason.",
+    "image": "Codex produces images from the art brief.",
+    "advisor": "Gemini Argon only when Lok asks; CAPTCHA goes to Lok.",
+    "sound": "SAO by default; MOSS only when Lok names it."
+  }
+}

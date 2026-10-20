@@ -1,0 +1,2 @@
+Error: No MCP server named 'nosuch' found.
+exit 1

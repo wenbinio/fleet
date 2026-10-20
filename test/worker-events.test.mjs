@@ -28,8 +28,9 @@ async function replaySpawn(t, { failed = false, hold = false, chatOnly = false }
   const original = childProcess.spawn;
   const originalKill = process.kill;
   let nextPid = 1_000_000;
-  childProcess.spawn = (command, args) => {
-    calls.push({ command, args });
+  childProcess.spawn = (command, args, options) => {
+    assert.equal(options.env.FLEET_WORKER, "1", `${command} must inherit the worker restriction`);
+    calls.push({ command, args, options });
     const child = new EventEmitter();
     Object.assign(child, { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
       pid: nextPid++, exitCode: null, signalCode: null });
@@ -152,7 +153,7 @@ test("replayed app-server frames use isolated spawn and report sandbox failure/f
     assert.equal(result.status, "failed");
     assert.match(result.notes.join(" "), /fell back to plugins-off/);
     assert.deepEqual(calls[0].args, ["app-server", "--listen", "stdio://", "--disable", "plugins", "-c",
-      "mcp_servers.node_repl.enabled=false", "-c", 'windows.sandbox="unelevated"']);
+      "mcp_servers.node_repl.enabled=false", "-c", "mcp_servers.fleet.enabled=false", "-c", 'windows.sandbox="unelevated"']);
   } finally { await worker.close(); }
 });
 

@@ -21,6 +21,9 @@ export function workerIsolationArgs(options = {}, backend = "exec") {
     : isolation === "none"
       ? []
       : ["--disable", "plugins", "-c", "mcp_servers.node_repl.enabled=false"];
+  // Even isolation:none must not give a worker the fleet orchestration server.
+  // ignore-user-config already removes every configured MCP server.
+  if (!args.includes("--ignore-user-config")) args.push("-c", "mcp_servers.fleet.enabled=false");
   if (options.windowsSandbox !== undefined) {
     args.push("-c", `windows.sandbox=${JSON.stringify(options.windowsSandbox)}`);
   }

@@ -1,0 +1,6 @@
+MARKETPLACE              ROOT
+openai-primary-runtime   C:\Users\loker\.cache\codex-runtimes\codex-primary-runtime\plugins\openai-primary-runtime
+openai-bundled           C:\Users\loker\.codex\.tmp\bundled-marketplaces\openai-bundled
+claude-plugins-official  C:\Users\loker\.codex\.tmp\marketplaces\claude-plugins-official
+openai-curated           C:\Users\loker\.codex\.tmp\plugins
+claude-cowork            C:\Users\loker\.codex\plugins\cache\claude-cowork

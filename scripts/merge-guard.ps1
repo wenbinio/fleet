@@ -1,6 +1,7 @@
 # Advisory tripwire only: the dispatch/integration protocol is the enforcement
 # layer. This hook is not a security boundary and must fail open on errors.
 $ErrorActionPreference = 'Stop'
+$env:FLEET_WORKER = '1'
 
 function Stop-Merge {
     param(
@@ -17,26 +18,13 @@ function Stop-Merge {
 }
 
 function Resolve-DataDirectory {
-    if ($null -ne $env:CLAUDE_PLUGIN_DATA -and $env:CLAUDE_PLUGIN_DATA.Length -gt 0) {
-        return $env:CLAUDE_PLUGIN_DATA
-    }
-
-    if ([string]::IsNullOrWhiteSpace($HOME)) {
-        return $null
-    }
-
-    $dataRoot = Join-Path $HOME '.claude/plugins/data'
-    $preferred = Join-Path $dataRoot 'fleet-agent-toolkit'
-    if (Test-Path -LiteralPath $preferred -PathType Container) { return $preferred }
-    [string[]]$names = @(Get-ChildItem -LiteralPath $dataRoot -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -cmatch '^fleet(-|$)' } | ForEach-Object { $_.Name })
-    [Array]::Sort($names, [StringComparer]::Ordinal)
-    foreach ($name in $names) {
-        $candidate = Join-Path $dataRoot $name
-        if (Test-Path -LiteralPath (Join-Path $candidate 'config.json') -PathType Leaf) { return $candidate }
-    }
-    if ($names.Count -gt 0) { return (Join-Path $dataRoot $names[0]) }
-    return $preferred
+    $userRoot = if ($env:HOME) { $env:HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
+    if (-not $userRoot) { return $null }
+    $fleetRoot = if ($env:FLEET_HOME) { $env:FLEET_HOME } elseif ($env:AGENT_TOOLKIT_HOME) { $env:AGENT_TOOLKIT_HOME } else { Join-Path $userRoot '.agent-toolkit' }
+    $shared = Join-Path $fleetRoot 'fleet'
+    $legacy = Join-Path $userRoot '.claude/plugins/data/fleet-agent-toolkit'
+    if (-not (Test-Path -LiteralPath (Join-Path $shared 'approved.json') -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $legacy 'approved.json') -PathType Leaf)) { return $legacy }
+    return $shared
 }
 
 function ConvertTo-StaticCommandToken {

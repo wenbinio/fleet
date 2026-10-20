@@ -3,7 +3,7 @@
 // bidirectional: the server also
 // sends us *requests* (approvals, dynamic-tool calls) that we must answer.
 
-import { spawn } from "node:child_process";
+import { spawnWorker as spawn } from "../../../core/lib/worker.mjs";
 import { EventEmitter } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 

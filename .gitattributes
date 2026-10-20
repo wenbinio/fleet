@@ -1,0 +1,7 @@
+* text=auto
+*.mjs text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.py text eol=lf
+core/bin/* text eol=lf
+core/bin/dsh-run.ps1 text eol=crlf

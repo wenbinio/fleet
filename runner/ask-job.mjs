@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawnWorker as spawn } from "../core/lib/worker.mjs";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { atomicJson, readJson } from "./lib/jobs.mjs";
-import { loadToolkit } from "./lib/toolkit-link.mjs";
+import { loadToolkit } from "./lib/runtime.mjs";
+import { workerEnv } from "../core/lib/worker.mjs";
 
 import { ADAPTERS } from "./lib/adapters.mjs";
 
@@ -51,7 +52,7 @@ export async function runAskJob(directory, { env = process.env, spawnBackend = s
     for (const { exe, args } of commands) {
       let pending = "", pendingError = "";
       if (fs.existsSync(path.join(directory, "interrupt.flag"))) { interrupted = true; break; }
-      child = spawnBackend(exe, args, { cwd: run.cwd ?? directory, env: { ...env, AGENT_TOOLKIT_CAPTURE_ATTACHED: "1" }, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+      child = spawnBackend(exe, args, { cwd: run.cwd ?? directory, env: workerEnv({ ...env, AGENT_TOOLKIT_CAPTURE_ATTACHED: "1" }), windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
       child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
       child.stdout.on("data", chunk => {
         stdout = append(stdout, chunk);

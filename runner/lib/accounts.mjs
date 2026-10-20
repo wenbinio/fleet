@@ -1,8 +1,10 @@
+import { enabledBackends, assertEnabled } from "./profile.mjs";
+import { resolveDataDir } from "./data-dir.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
-import { loadToolkit } from "./toolkit-link.mjs";
+import { loadToolkit } from "./runtime.mjs";
 import { atomicJson, listRuns } from "./jobs.mjs";
 import { BACKENDS } from "./adapters.mjs";
 
@@ -43,16 +45,19 @@ export function parseModelIds(text) {
 }
 export async function accounts({ backend, env = process.env, dataDir, apiOptions = {}, now = Date.now, discover, platform = process.platform } = {}) {
   if (backend !== undefined && !BACKENDS.includes(backend)) throw new Error("invalid backend");
+  const enabled = enabledBackends({ env });
+  if (backend) assertEnabled(backend, { env });
+  dataDir ??= await resolveDataDir({ env });
   const { repo, toolkit } = await loadToolkit({ env });
   const [api, media, runners, webchat] = await Promise.all(["api", "media", "runners", "webchat/state"].map(name => import(pathToFileURL(path.join(repo, "lib", `${name}.mjs`)).href)));
-  const config = toolkit.loadConfig(env), services = api.providers({ env });
+  const config = toolkit.loadConfig(env), services = enabled.includes("api") ? api.providers({ env }) : [];
   const sound = media.soundTools(config, { platform });
   const soundModels = () => models(["sao", "moss"].filter(engine => sound[engine]), "local", "sound");
   const chatState = webchat.readState(webchat.chatgptHome(env));
   const chatModels = () => models(chatState.models.length ? chatState.models : ["strongest"], "subscription", "text");
   const aliases = Object.entries(runners.aliases).filter(([id]) => ["astra", "sol", "luna"].includes(id));
   // Fingerprints invalidate stale installation/provider menus without storing config or credentials.
-  const fingerprint = createHash("sha256").update(JSON.stringify([3, repo, aliases, services.map(s => [s.name, s.baseUrl]), config.soundVenv, config.mossVenv, config.soundDir, config.mossTools])).digest("hex");
+  const fingerprint = createHash("sha256").update(JSON.stringify([4, enabled, repo, aliases, services.map(s => [s.name, s.baseUrl]), config.soundVenv, config.mossVenv, config.soundDir, config.mossTools])).digest("hex");
   const cacheFile = path.join(dataDir, "model-menu.json");
   let cache;
   try { cache = JSON.parse(fs.readFileSync(cacheFile, "utf8")); } catch {}
@@ -64,6 +69,7 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
       return exe ? toolkit.capture(exe, ["models"], { env, timeout: 30_000 }) : { code: 1, stdout: "", stderr: "" };
     });
     const cliModels = async (name, fallback) => {
+      if (!enabled.includes(name)) return [fallback];
       try {
         const result = await discoverModels(name);
         const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
@@ -91,7 +97,7 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
     // Only the menu is cached: never accountStatus, sign-in detail, keys or raw CLI output.
     atomicJson(cacheFile, { savedAt: now(), fingerprint, rows: menu });
   }
-  const selected = menu.filter(row => backend === undefined || row.backend === backend);
+  const selected = menu.filter(row => enabled.includes(row.backend) && (backend === undefined || row.backend === backend));
   const statuses = new Map();
   const signIn = name => {
     if (!statuses.has(name)) statuses.set(name, toolkit.signInStatus(name, { env }));
@@ -106,7 +112,7 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
       const service = services.find(service => service.name === row.provider);
       status = { ...await api.accountStatus(service, { ...apiOptions, env }), spendUsd: history.runs.filter(run => run.provider === row.provider).reduce((sum, run) => sum + (run.costUsd ?? 0), 0) };
     } else if (row.backend === "advisor") {
-      const found = fs.existsSync(path.join(repo, "skills", "gemini-advisor", "advisor.mjs")) && Boolean(toolkit.resolveTool("chrome", { env }));
+      const found = fs.existsSync(path.join(repo, "..", "backends", "advisor", "advisor.mjs")) && Boolean(toolkit.resolveTool("chrome", { env }));
       status = { found, signedIn: null, detail: found ? "Gemini web; sign-in checked only when Lok asks" : "advisor script or Chrome missing" };
     } else if (row.backend === "chatgpt") {
       status = { found: Boolean(toolkit.resolveTool("chrome", { env })), signedIn: chatState.signedIn ?? null, detail: chatState.signedIn === true ? `signed in; checked ${chatState.checkedAt ?? "date unavailable"}` : "run: bin/chatgpt-web login, then check" };

@@ -2,6 +2,7 @@
 
 # Advisory tripwire only: the dispatch/integration protocol is the enforcement
 # layer. This hook is not a security boundary and must fail open on errors.
+export FLEET_WORKER=1
 
 case "$(uname -s 2>/dev/null)" in
     MINGW*|MSYS*|CYGWIN*)
@@ -17,27 +18,16 @@ block_merge() {
 }
 
 resolve_data_dir() {
-    if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
-        printf '%s\n' "$CLAUDE_PLUGIN_DATA"
-        return 0
+    user_home="${HOME:-${USERPROFILE:-}}"
+    [ -n "$user_home" ] || return 1
+    fleet_home="${FLEET_HOME:-${AGENT_TOOLKIT_HOME:-$user_home/.agent-toolkit}}"
+    shared="$fleet_home/fleet"
+    legacy="$user_home/.claude/plugins/data/fleet-agent-toolkit"
+    if [ ! -f "$shared/approved.json" ] && [ -f "$legacy/approved.json" ]; then
+        printf '%s\n' "$legacy"
+    else
+        printf '%s\n' "$shared"
     fi
-
-    [ -n "${HOME:-}" ] || return 1
-    preferred="$HOME/.claude/plugins/data/fleet-agent-toolkit"
-    if [ -d "$preferred" ]; then printf '%s\n' "$preferred"; return 0; fi
-    first=''
-    # C ordering matches the JavaScript and PowerShell ordinal ordering.
-    LC_ALL=C
-    export LC_ALL
-    for candidate in "$HOME"/.claude/plugins/data/fleet/ "$HOME"/.claude/plugins/data/fleet-*/; do
-        if [ -d "$candidate" ]; then
-            [ -n "$first" ] || first=${candidate%/}
-            if [ ! -f "$candidate/config.json" ]; then continue; fi
-            printf '%s\n' "${candidate%/}"
-            return 0
-        fi
-    done
-    printf '%s\n' "${first:-$preferred}"
 }
 
 command -v jq >/dev/null 2>&1 || exit 0

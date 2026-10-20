@@ -3,6 +3,8 @@ name: ask
 description: Run one job on codex, agy, grok, deepseek, chatgpt, api (OpenRouter), image, sound or advisor — args: backend, then the task — and report the answer honestly.
 ---
 
+Fleet root: use `${CLAUDE_PLUGIN_ROOT}` in Claude Code; elsewhere use the fleet root in your AGENTS.md fleet block. Set `FLEET_ROOT` to that path for the commands below.
+
 # One job on one backend
 
 Arguments: `<backend> <task>`. If the backend is missing, pick by Lok's rules: building code goes to `codex`

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawnWorker as spawn } from "../core/lib/worker.mjs";
 import { promises as fsp } from "node:fs";
 import os from "node:os";
 import path from "node:path";

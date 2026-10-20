@@ -1,13 +1,17 @@
 #!/usr/bin/env node
+import { enabledBackends, assertEnabled } from "./lib/profile.mjs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveDataDir } from "./lib/data-dir.mjs";
 import { startAsk, waitRuns, listRuns } from "./lib/jobs.mjs";
-import { loadToolkit } from "./lib/toolkit-link.mjs";
+import { loadToolkit } from "./lib/runtime.mjs";
+import { assertOrchestrator } from "../core/lib/worker.mjs";
 
 export async function cli(argv, { env = process.env, print = console.log, warn = console.error, apiOptions = {}, menuOptions = {}, start = startAsk } = {}) {
   const [command, ...args] = argv;
+  if (command === "ask") assertOrchestrator(env);
   const dataDir = await resolveDataDir({ env });
+  if (!command || ["--help", "-h", "help"].includes(command)) { print(`fleet ask --backend ${enabledBackends({ env }).join("|")} (--prompt TEXT | --prompt-file FILE) [options]; wait RUNID...; runs; run RUNID; accounts`); return 0; }
   let result;
   if (command === "ask") {
     const opts = {};
@@ -24,6 +28,7 @@ export async function cli(argv, { env = process.env, print = console.log, warn =
       else if (opts[name] !== undefined) throw new Error(`duplicate option: ${args[i - 1]}`);
       else opts[name] = ["maxTokens", "maxCostUsd", "seconds", "takes", "seed", "timeout"].includes(name) ? Number(value) : value;
     }
+    assertEnabled(opts.backend, { env });
     result = await start(opts, { env, dataDir });
   } else if (command === "wait") {
     const ids = []; let timeout;
@@ -40,6 +45,7 @@ export async function cli(argv, { env = process.env, print = console.log, warn =
     const { accounts } = await import("./lib/accounts.mjs");
     result = await accounts({ ...menuOptions, backend: args[1], env, dataDir, apiOptions });
   } else if (command === "models") {
+    assertEnabled("api", { env });
     let serviceName, n = 4;
     for (let i = 0; i < args.length; i++) {
       if (args[i] === "--free") continue;

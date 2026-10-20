@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { loadToolkit } from "./toolkit-link.mjs";
+import { loadToolkit } from "./runtime.mjs";
 
 export function finalText(event) {
   const value = event.text ?? event.content ?? (typeof event.message === "string" ? event.message : event.message?.content) ?? (typeof event.data === "string" ? event.data : event.data?.text ?? event.data?.content) ?? event.output ?? event.answer ?? event.result;
@@ -180,7 +180,7 @@ export const ADAPTERS = {
   advisor: {
     defaults: { model: "argon" }, allowed: ["files", "lokAsked"], maxLive: 2,
     validate(opts) { if (opts.lokAsked !== true) throw new Error("advisor runs only when Lok asks for Argon"); },
-    command: (run, { directory, repo }) => ({ exe: process.execPath, args: [path.join(repo, "skills", "gemini-advisor", "advisor.mjs"), "ask", prompt(directory), ...(run.files?.length ? ["--files", ...run.files] : []), "--out", path.join(directory, "answer.md")] }),
+    command: (run, { directory, repo }) => ({ exe: process.execPath, args: [path.join(repo, "..", "backends", "advisor", "advisor.mjs"), "ask", prompt(directory), ...(run.files?.length ? ["--files", ...run.files] : []), "--out", path.join(directory, "answer.md")] }),
     stderrLine(line) {
       const start = line.indexOf("{");
       if (start < 0) return;

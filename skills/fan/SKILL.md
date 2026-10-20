@@ -3,11 +3,13 @@ name: fan
 description: Send one read-only prompt to several backends or models at once (args: backend:model targets), then compare and synthesize their answers.
 ---
 
+Fleet root: use `${CLAUDE_PLUGIN_ROOT}` in Claude Code; elsewhere use the fleet root in your AGENTS.md fleet block. Set `FLEET_ROOT` to that path for the commands below.
+
 # One prompt, several answers
 
 Arguments: the targets, written `backend[:model]`, for example `agy:gemini-3.8-flash-low grok codex:sol
 api:free api:free api:free`. With no targets, use three free api models from different vendors:
-`node "${CLAUDE_PLUGIN_ROOT}/runner/fleet.mjs" models --free --n 3`.
+`node "${FLEET_ROOT}/runner/fleet.mjs" models --free --n 3`.
 
 1. Write one grounded, **read-only** prompt. Every target gets the same prompt. Codex targets get
    `readOnly: true`. agy and grok are read-only by design and must never be asked for code. api targets see only
@@ -17,7 +19,7 @@ api:free api:free api:free`. With no targets, use three free api models from dif
    - A paid api model needs its exact id, `maxCostUsd` and a reason.
 2. Call `fleet_ask` once per target. agy and grok allow 4 live jobs each, and api allows 8; `fleet_ask` refuses
    more than that.
-3. Start one background `wait` with every runId (`node "${CLAUDE_PLUGIN_ROOT}/runner/fleet.mjs" wait <id1> <id2> …`).
+3. Start one background `wait` with every runId (`node "${FLEET_ROOT}/runner/fleet.mjs" wait <id1> <id2> …`).
    Don't poll. It exits 1 if any target failed; the output still has every answer and error.
 4. Read the answers from the wait output; `fleet_run` only for one that was trimmed.
 

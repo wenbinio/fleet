@@ -1,3 +1,5 @@
+import { approvalPath, dataPaths, legacyDataDir } from '../runner/lib/data-dir.mjs';
+import { existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import {
   mkdir,
@@ -26,7 +28,11 @@ function normalizeStorePath(storePath) {
   if (storePath.includes('\0')) {
     throw new TypeError('path must not contain NUL');
   }
-  return resolve(storePath);
+  const resolved = resolve(storePath);
+  const canonical = resolve(dataPaths().shared, 'approved.json');
+  const legacy = legacyDataDir(dirname(resolved));
+  if (basename(resolved) === 'approved.json' && !existsSync(resolved) && legacy && existsSync(resolve(legacy, 'approved.json'))) return resolve(legacy, 'approved.json');
+  return resolved === canonical ? approvalPath() : resolved;
 }
 
 function requireString(name, value) {
@@ -268,10 +274,10 @@ if (import.meta.url === __pathToFileURL(process.argv[1] ?? '').href) {
     if (process.argv[2] !== 'write') throw new TypeError('usage: verdict-store.mjs write --store ... --repo ... --branch ... --sha ... --review-verdict ... --driver-verify-passed ... --review-verify-passed ... [--allow-unverified ...]');
     const repo = flags['--repo'];
     if (!repo) throw new TypeError('--repo is required');
-    const common = execFileSync('git', ['-C', repo, 'rev-parse', '--git-common-dir'], { encoding: 'utf8' }).trim();
+    const common = execFileSync('git', ['-C', repo, 'rev-parse', '--git-common-dir'], { encoding: 'utf8', env: { ...process.env, FLEET_WORKER: '1' } }).trim();
     const absolute = realpathSync(common.length && !/^([A-Za-z]:[\/]|\/)/.test(common) ? `${repo}/${common}` : common);
     const repoKey = absolute.split('\\').join('/');
-    const entry = await writeVerdict(flags['--store'], {
+    const entry = await writeVerdict(flags['--store'] ?? approvalPath(), {
       repoKey,
       branch: flags['--branch'],
       sha: flags['--sha'],

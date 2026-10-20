@@ -17,7 +17,7 @@ const RUNNER = path.resolve(HERE, "../runner/fleet-runner.mjs");
 const DELEGATE = path.resolve(HERE, "../runner/delegate.mjs");
 const EXEC_MOCK = path.join(HERE, "mock-codex-exec.mjs");
 const APP_MOCK = path.join(HERE, "mock-app-server.mjs");
-const DEFAULT_FLAGS = ["--disable", "plugins", "-c", "mcp_servers.node_repl.enabled=false"];
+const DEFAULT_FLAGS = ["--disable", "plugins", "-c", "mcp_servers.node_repl.enabled=false", "-c", "mcp_servers.fleet.enabled=false"];
 const execFileAsync = promisify(execFile);
 
 async function temp(t) {
@@ -34,7 +34,7 @@ function includesArgs(args, expected) {
 test("isolation helper defaults, modes, sandbox overrides, and validation", () => {
   assert.deepEqual(workerIsolationArgs(), DEFAULT_FLAGS);
   assert.deepEqual(workerIsolationArgs({ isolation: "plugins-off" }), DEFAULT_FLAGS);
-  assert.deepEqual(workerIsolationArgs({ isolation: "none" }), []);
+  assert.deepEqual(workerIsolationArgs({ isolation: "none" }), ["-c", "mcp_servers.fleet.enabled=false"]);
   assert.deepEqual(workerIsolationArgs({ isolation: "ignore-user-config", model: "test-model" }), ["--ignore-user-config"]);
   for (const isolation of ["plugins-off", "ignore-user-config", "none"]) {
     for (const windowsSandbox of ["elevated", "unelevated"]) {
@@ -42,6 +42,7 @@ test("isolation helper defaults, modes, sandbox overrides, and validation", () =
         const args = workerIsolationArgs({ isolation, windowsSandbox, model: "test-model" }, backend);
         includesArgs(args, ["-c", `windows.sandbox="${windowsSandbox}"`]);
         if (backend === "app-server") assert.ok(!args.includes("--ignore-user-config"));
+        assert.equal(args.includes("mcp_servers.fleet.enabled=false"), !args.includes("--ignore-user-config"));
       }
     }
   }
