@@ -312,7 +312,7 @@ async function handleMessage(message) {
     result(message.id, {
       protocolVersion: message.params?.protocolVersion ?? DEFAULT_PROTOCOL_VERSION,
       capabilities: { tools: {} },
-      serverInfo: { name: "fleet", version: "0.9.1" },
+      serverInfo: { name: "fleet", version: "0.10.0" },
     });
     return;
   }

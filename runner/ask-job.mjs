@@ -86,14 +86,15 @@ export async function runAskJob(directory, { env = process.env, spawnBackend = s
     fs.writeFileSync(path.join(directory, "answer.txt"), answer);
     if (parsed.reasoning !== undefined) fs.writeFileSync(path.join(directory, "reasoning.txt"), parsed.reasoning);
     const status = interrupted ? "interrupted" : parsed.status ?? (adapter.deniedCodes?.includes(exitCode) ? "denied" : exitCode !== 0 || !answer.trim() ? "failed" : "done");
+    delete run.notice;
     run = { ...run, ...parsed.metadata, status, exitCode };
     if (status !== "done") run.error = status === "interrupted" ? "interrupted" : parsed.error || stderr.toString("utf8").slice(0, 2000) || (exitCode ? `exit ${exitCode}` : "empty answer");
     if (!parsed.status && !exitCode && !answer.trim() && !interrupted) run.error = "empty answer";
   } catch (error) {
+    delete run.notice;
     run = { ...run, status: interrupted ? "interrupted" : "failed", exitCode: 1, error: (stderr.toString("utf8") || error.message).slice(0, 2000) };
   } finally {
     clearInterval(timer);
-    delete run.notice;
     if (outputFd !== undefined) fs.closeSync(outputFd);
     fs.writeFileSync(path.join(directory, "stdout.txt"), stdout);
     fs.writeFileSync(path.join(directory, "stderr.txt"), stderr);

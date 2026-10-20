@@ -24,7 +24,7 @@ function fixture(t) {
   const root = fs.mkdtempSync(path.join(scratch, "fleet-ask-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 }));
   const repo = path.join(root, "toolkit"), dataDir = path.join(root, "data"), runsDir = path.join(root, "toolkit-runs");
-  const env = { ...process.env, AGENT_TOOLKIT_HOME: path.join(root, "home"), CLAUDE_PLUGIN_DATA: dataDir, FLEET_FAKE_RUNS: runsDir };
+  const env = { ...process.env, AGENT_TOOLKIT_HOME: path.join(root, "home"), CHATGPT_WEB_HOME: path.join(root, "chatgpt"), CLAUDE_PLUGIN_DATA: dataDir, FLEET_FAKE_RUNS: runsDir };
   write(path.join(env.AGENT_TOOLKIT_HOME, "config.json"), JSON.stringify({ repo, providers: [{name:"openrouter",kind:"openai",baseUrl:"https://openrouter.invalid/api/v1",keyEnv:"FAKE_PROVIDER_KEY"}] }));
   write(path.join(repo, "lib/toolkit.mjs"), `
     import fs from "node:fs"; import path from "node:path";
@@ -35,6 +35,7 @@ function fixture(t) {
   `);
   write(path.join(repo, "lib/api.mjs"), `export * from ${JSON.stringify(new URL("../../../lib/api.mjs", import.meta.url).href)};`);
   write(path.join(repo, "lib/media.mjs"), `export * from ${JSON.stringify(new URL("../../../lib/media.mjs", import.meta.url).href)};`);
+  write(path.join(repo, "lib/webchat/state.mjs"), `export * from ${JSON.stringify(new URL("../../../lib/webchat/state.mjs", import.meta.url).href)};`);
   write(path.join(repo, "skills/gemini-advisor/advisor.mjs"), "// fake advisor; never executed");
   // A complete fake runner can also be launched by the detached integration test.
   write(path.join(repo, "lib/runners.mjs"), `
@@ -73,7 +74,7 @@ function backendFake(action) {
   };
 }
 async function reserve(f, opts = {}) {
-  const result = await startAsk({ backend: "codex", prompt: "implement the thing", ...(["api", "image", "advisor", "sound"].includes(opts.backend) ? {} : { cwd: f.root }), ...opts }, { env: f.env, spawnJob: detachedFake() });
+  const result = await startAsk({ backend: "codex", prompt: "implement the thing", ...(["api", "image", "advisor", "chatgpt", "sound"].includes(opts.backend) ? {} : { cwd: f.root }), ...opts }, { env: f.env, spawnJob: detachedFake() });
   return { result, directory: runDirectory(f.dataDir, result.runId) };
 }
 function finish(child, stdout = "", stderr = "", code = 0) {
@@ -230,7 +231,7 @@ test("MCP exposes eight concise tools and routes each kind including accounts an
   await assert.rejects(callTool("fleet_steer", { runId: id, text: "continue" }, options), /fleet_ask with resume/);
   assert.equal((await callTool("fleet_interrupt", { runId: id }, options)).value.ok, true);
   assert.ok(fs.existsSync(path.join(directory, "interrupt.flag")));
-  assert.equal((await callTool("fleet_accounts", {}, { ...options, apiOptions: { keyReader: async () => null, fetch: async () => { throw new Error("fake unavailable catalog"); } } })).value.length, 8);
+  assert.equal((await callTool("fleet_accounts", {}, { ...options, apiOptions: { keyReader: async () => null, fetch: async () => { throw new Error("fake unavailable catalog"); } } })).value.length, 9);
   const delegate = path.join(f.dataDir, "runs", "delegate");
   write(path.join(delegate, "state.json"), '{"status":"awaiting-steer","turns":1}');
   write(path.join(delegate, "events.jsonl"), JSON.stringify({ type: "agentMessage", text: "old".repeat(100_000) }) + "\n" + Array.from({ length: 12 }, (_, i) => JSON.stringify({ type: "agentMessage", text: `beat-${i}` })).join("\n"));
@@ -261,7 +262,7 @@ test("MCP exposes eight concise tools and routes each kind including accounts an
   await assert.rejects(callTool("fleet_runs", { limit: -1 }, options), /positive integer/);
 });
 test("adapter table is the single source of backend contracts", () => {
-  assert.deepEqual(Object.keys(ADAPTERS), ["codex", "agy", "deepseek", "grok", "api", "image", "advisor", "sound"]);
+  assert.deepEqual(Object.keys(ADAPTERS), ["codex", "agy", "deepseek", "grok", "api", "image", "advisor", "chatgpt", "sound"]);
   for (const adapter of Object.values(ADAPTERS)) {
     assert.equal(typeof adapter.defaults, "object"); assert.ok(Array.isArray(adapter.allowed));
     for (const operation of ["command", "parse", "transcript"]) assert.equal(typeof adapter[operation], "function");
@@ -457,6 +458,49 @@ test("advisor requires Lok, buffers waiting stderr, clears on challenge signal, 
   const failure = await runAskJob(failed.directory, { env: f.env, spawnBackend: backendFake(({ child }) => { calls++; finish(child, "", "challenge timeout", 1); }) });
   assert.equal(failure.status, "failed"); assert.equal(calls, 1);
 });
+test("ChatGPT adapter passes files/model/timeout and records every terminal outcome", async t => {
+  const f = fixture(t), attachment = write(path.join(f.root, "context.txt"), "fixture context");
+  for (const timeout of [0, -1, "30", Infinity]) assert.throws(() => validateAsk({ backend: "chatgpt", prompt: "hello", timeout }), /positive seconds/);
+  for (const [outcome, code] of [["done", 0], ["failed", 1], ["signed_out", 3], ["limit", 4], ["paced", 5]]) {
+    const { directory, result } = await reserve(f, { backend: "chatgpt", files: [attachment], timeout: 90 });
+    assert.equal(result.model, "strongest");
+    const run = await runAskJob(directory, { env: f.env, spawnBackend: backendFake(({ args, child }) => {
+      assert.equal(args[0], path.join(f.repo, "lib", "webchat", "chatgpt.mjs"));
+      assert.deepEqual(args.slice(1), ["ask", path.join(directory, "prompt.txt"), "--files", attachment, "--model", "strongest", "--timeout", "90", "--out", path.join(directory, "answer.md")]);
+      if (outcome === "done") write(path.join(directory, "answer.md"), "Web answer");
+      finish(child, JSON.stringify({ outcome, model: "GPT-6 Pro", answerChars: outcome === "done" ? 10 : 0, ...(outcome === "done" ? {} : { notice: "fixture reason", nextAt: "2026-10-20T15:00:00Z" }) }), "", code);
+    }) });
+    assert.equal(run.status, outcome); assert.equal(run.model, "GPT-6 Pro");
+    if (outcome !== "done") { assert.equal(run.error, "fixture reason"); assert.equal(run.notice, "fixture reason"); assert.equal(run.nextAt, "2026-10-20T15:00:00Z"); }
+    assert.equal((await waitRuns([result.runId], { env: f.env }))[0].status, outcome);
+    assert.equal(await cli(["wait", result.runId], { env: f.env, print() {} }), outcome === "done" ? 0 : 1);
+  }
+  const received = [];
+  await cli(["ask", "--backend", "chatgpt", "--prompt", "hi", "--timeout", "120"], { env: f.env, print() {}, start: async opts => { received.push(opts); return {}; } });
+  assert.equal(received[0].timeout, 120);
+  assert.equal(TOOLS[0].inputSchema.properties.timeout, undefined); // Brief keeps MCP options unchanged.
+});
+test("ChatGPT challenge state is live, counts toward cap, clears and preserves its answer", async t => {
+  const f = fixture(t), { directory, result } = await reserve(f, { backend: "chatgpt" });
+  let child;
+  const running = runAskJob(directory, { env: f.env, spawnBackend: backendFake(value => { child = value.child; }) });
+  while (!child) await new Promise(resolve => setImmediate(resolve));
+  child.stderr.write('{"waitingForLok":"Please verify');
+  child.stderr.write(' in Chrome"}\n');
+  assert.equal(readAsk(directory).status, "waiting_for_lok");
+  assert.match((await callTool("fleet_status", { runId: result.runId }, { env: f.env })).value.notice, /ChatGPT.*Lok/);
+  await assert.rejects(reserve(f, { backend: "chatgpt" }), /runs 1 jobs at once/);
+  const notices = [];
+  assert.equal((await waitRuns([result.runId], { env: f.env, timeout: 0, warn: line => notices.push(line) }))[0].status, "waiting_for_lok");
+  assert.equal(notices.length, 1);
+  child.stderr.write('{"challenge":"cleared","afterSecs":3}\n');
+  assert.equal(readAsk(directory).status, "running");
+  write(path.join(directory, "answer.md"), "complete answer");
+  finish(child, '{"outcome":"done","model":"Pro","answerChars":15}');
+  const completed = await running;
+  assert.equal(completed.status, "done"); assert.equal(completed.notice, undefined);
+  assert.equal((await callTool("fleet_run", { runId: result.runId }, { env: f.env })).value.answer, "complete answer");
+});
 test("waiting advisor jobs count against caps, timeout remains live and dead PID is lost", async t => {
   const f = fixture(t);
   const first = await reserve(f, { backend: "advisor", lokAsked: true });
@@ -572,6 +616,19 @@ test("Grok discovery only reads model bullets in Available models and ignores lo
   assert.deepEqual(parseGrokModelIds("Sign in at https://grok.com\nDefault model: grok-4.7\n- grok-9"), []);
   assert.deepEqual(parseGrokModelIds(`${grokModelsOutput}\n  - https://grok.com\n  - grok.com\n\nHelp: https://grok.com\n- grok-9`), grokModelIds);
   assert.deepEqual(parseGrokModelIds("Available models:\n- grok-4.7\n- grok-4.7"), ["grok-4.7"]);
+});
+test("ChatGPT menu reads fresh local state even on cache hits and never launches Chrome", async t => {
+  const f = fixture(t);
+  const options = { backend: "chatgpt", env: f.env, dataDir: f.dataDir, now: () => 1000, discover: async () => ({ code: 1, stdout: "", stderr: "" }), apiOptions: { keyReader: async () => null, fetch: async () => { throw new Error("fake offline"); } } };
+  let [row] = await accounts(options);
+  assert.equal(row.signedIn, null); assert.deepEqual(row.models.map(m => m.id), ["strongest"]);
+  assert.equal(row.detail, "run: bin/chatgpt-web login, then check");
+  write(path.join(f.env.CHATGPT_WEB_HOME, "state.json"), JSON.stringify({ signedIn: true, checkedAt: "2026-10-20T10:00:00Z", models: ["Pro", "Thinking"], plan: "private fixture plan", prompts: ["2026-10-20T09:00:00Z"] }));
+  [row] = await accounts({ ...options, now: () => 2000, discover: () => assert.fail("menu cache should avoid rediscovery") });
+  assert.equal(row.signedIn, true); assert.deepEqual(row.models.map(m => m.id), ["Pro", "Thinking"]); assert.match(row.detail, /2026-10-20/);
+  assert.ok(row.models.every(m => m.cost === "subscription" && m.access === "text"));
+  const cached = fs.readFileSync(path.join(f.dataDir, "model-menu.json"), "utf8");
+  for (const value of ["signedIn", "private fixture plan", "2026-10-20T09:00:00Z", "checkedAt"]) assert.ok(!cached.includes(value));
 });
 test("menu fallback excludes failed agy output and CLI forwards media options", async t => {
   const f = fixture(t);

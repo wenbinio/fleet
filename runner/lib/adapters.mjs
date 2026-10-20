@@ -191,6 +191,27 @@ export const ADAPTERS = {
     parse: ({ directory }) => ({ answer: readText(path.join(directory, "answer.md")) }),
     transcript: textTranscript,
   },
+  chatgpt: {
+    defaults: { model: "strongest" }, allowed: ["files", "model", "timeout"], maxLive: 1, json: true,
+    validate(opts) { if (opts.timeout !== undefined && (!Number.isFinite(opts.timeout) || opts.timeout <= 0)) throw new Error("timeout must be positive seconds"); },
+    command: (run, { directory, repo }) => ({ exe: process.execPath, args: [path.join(repo, "lib", "webchat", "chatgpt.mjs"), "ask", prompt(directory), ...(run.files?.length ? ["--files", ...run.files] : []), "--model", run.model, ...(run.timeout !== undefined ? ["--timeout", String(run.timeout)] : []), "--out", path.join(directory, "answer.md")] }),
+    stderrLine(line) {
+      const change = ADAPTERS.advisor.stderrLine(line);
+      return change?.status === "waiting_for_lok" ? { ...change, notice: "A ChatGPT human verification check is waiting in a Chrome window for Lok" } : change;
+    },
+    parse({ stdout, directory, run, exitCode }) {
+      if (!stdout.trim()) return { answer: "", status: "failed" };
+      const data = jsonResult(stdout);
+      if (!["done", "failed", "signed_out", "limit", "paced"].includes(data.outcome)) throw new Error("invalid ChatGPT web outcome");
+      return {
+        answer: readText(path.join(directory, "answer.md")),
+        status: data.outcome === "done" && exitCode !== 0 ? "failed" : data.outcome,
+        error: data.notice,
+        metadata: { model: data.model ?? run.model, ...Object.fromEntries(["notice", "nextAt", "note"].filter(key => data[key] !== undefined).map(key => [key, data[key]])) },
+      };
+    },
+    transcript: (run, context) => ({ ...textTranscript(run, context), details: { notice: run.notice, nextAt: run.nextAt, note: run.note } }),
+  },
   sound: {
     defaults: { engine: "sao", takes: 1, music: false }, allowed: ["engine", "seconds", "takes", "seed", "music", "outDir"], maxLive: 1,
     validate(opts) {
@@ -231,4 +252,4 @@ export const ADAPTERS = {
 };
 export const BACKENDS = Object.keys(ADAPTERS);
 export const ASK_KEYS = [...new Set(["backend", "prompt", "promptFile", ...Object.values(ADAPTERS).flatMap(a => a.allowed)])];
-export const TERMINAL_STATUSES = new Set(["done", "failed", "denied", "interrupted", "lost", "empty", "rate_limited", "daily_limit"]);
+export const TERMINAL_STATUSES = new Set(["done", "failed", "denied", "interrupted", "lost", "empty", "rate_limited", "daily_limit", "signed_out", "limit", "paced"]);

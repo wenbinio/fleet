@@ -44,13 +44,15 @@ export function parseModelIds(text) {
 export async function accounts({ backend, env = process.env, dataDir, apiOptions = {}, now = Date.now, discover, platform = process.platform } = {}) {
   if (backend !== undefined && !BACKENDS.includes(backend)) throw new Error("invalid backend");
   const { repo, toolkit } = await loadToolkit({ env });
-  const [api, media, runners] = await Promise.all(["api", "media", "runners"].map(name => import(pathToFileURL(path.join(repo, "lib", `${name}.mjs`)).href)));
+  const [api, media, runners, webchat] = await Promise.all(["api", "media", "runners", "webchat/state"].map(name => import(pathToFileURL(path.join(repo, "lib", `${name}.mjs`)).href)));
   const config = toolkit.loadConfig(env), services = api.providers({ env });
   const sound = media.soundTools(config, { platform });
   const soundModels = () => models(["sao", "moss"].filter(engine => sound[engine]), "local", "sound");
+  const chatState = webchat.readState(webchat.chatgptHome(env));
+  const chatModels = () => models(chatState.models.length ? chatState.models : ["strongest"], "subscription", "text");
   const aliases = Object.entries(runners.aliases).filter(([id]) => ["astra", "sol", "luna"].includes(id));
   // Fingerprints invalidate stale installation/provider menus without storing config or credentials.
-  const fingerprint = createHash("sha256").update(JSON.stringify([2, repo, aliases, services.map(s => [s.name, s.baseUrl]), config.soundVenv, config.mossVenv, config.soundDir, config.mossTools])).digest("hex");
+  const fingerprint = createHash("sha256").update(JSON.stringify([3, repo, aliases, services.map(s => [s.name, s.baseUrl]), config.soundVenv, config.mossVenv, config.soundDir, config.mossTools])).digest("hex");
   const cacheFile = path.join(dataDir, "model-menu.json");
   let cache;
   try { cache = JSON.parse(fs.readFileSync(cacheFile, "utf8")); } catch {}
@@ -82,6 +84,7 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
       })),
       { backend: "image", models: [{ id: "sol", modelId: runners.aliases.sol, cost: "subscription", access: "image" }], notes: [] },
       { backend: "advisor", models: models(["argon"], "subscription", "text"), notes: ["only when Lok asks"] },
+      { backend: "chatgpt", models: chatModels(), notes: ["ChatGPT chat allowance; one prompt at a time, paced"] },
       { backend: "sound", models: soundModels(), notes: [] },
     ];
     fs.mkdirSync(dataDir, { recursive: true });
@@ -105,9 +108,11 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
     } else if (row.backend === "advisor") {
       const found = fs.existsSync(path.join(repo, "skills", "gemini-advisor", "advisor.mjs")) && Boolean(toolkit.resolveTool("chrome", { env }));
       status = { found, signedIn: null, detail: found ? "Gemini web; sign-in checked only when Lok asks" : "advisor script or Chrome missing" };
+    } else if (row.backend === "chatgpt") {
+      status = { found: Boolean(toolkit.resolveTool("chrome", { env })), signedIn: chatState.signedIn ?? null, detail: chatState.signedIn === true ? `signed in; checked ${chatState.checkedAt ?? "date unavailable"}` : "run: bin/chatgpt-web login, then check" };
     } else {
       status = { found: soundModels().length > 0, signedIn: null, detail: "local sound tools; no login" };
     }
-    return { ...status, backend: row.backend, ...(row.provider ? { provider: row.provider } : {}), models: row.backend === "sound" ? soundModels() : row.models, notes: row.notes };
+    return { ...status, backend: row.backend, ...(row.provider ? { provider: row.provider } : {}), models: row.backend === "sound" ? soundModels() : row.backend === "chatgpt" ? chatModels() : row.models, notes: row.notes };
   }));
 }
