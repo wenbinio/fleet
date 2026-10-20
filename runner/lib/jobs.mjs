@@ -201,11 +201,12 @@ export async function waitRuns(ids, { dataDir, env = process.env, timeout, pollM
     const rows = directories.map(directory => {
       const kind = kindOf(directory);
       const run = kind === "ask" ? readAsk(directory) : readJson(path.join(directory, kind === "delegate" ? "state.json" : "results.json"));
-      return { runId: run.runId ?? path.basename(directory), backend: run.backend ?? "codex", model: run.model ?? null, status: run.status ?? (run.complete ? "done" : "running"), ...(run.notice ? { notice: run.notice } : {}), ...(run.files ? { files: run.files } : {}), durationMs: run.durationMs ?? (run.startedAt ? Date.now() - Date.parse(run.startedAt) : null), answer: answerOf(directory, 6000, true) };
+      const status = run.status ?? (run.complete ? "done" : "running");
+      return { runId: run.runId ?? path.basename(directory), backend: run.backend ?? "codex", model: run.model ?? null, status, ...(status !== "done" && typeof run.error === "string" ? { error: run.error.slice(0, 500) } : {}), ...(run.notice ? { notice: run.notice } : {}), ...(run.files ? { files: run.files } : {}), durationMs: run.durationMs ?? (run.startedAt ? Date.now() - Date.parse(run.startedAt) : null), answer: answerOf(directory, 6000, true) };
     });
     for (const row of rows) if (row.status === "waiting_for_lok" && !notified.has(row.runId)) { notified.add(row.runId); warn(`${row.runId}: ${row.notice}`); }
     if (rows.every(r => TERMINAL_STATUSES.has(r.status))) return rows;
-    if (timeout !== undefined && Date.now() - start >= timeout * 1000) return rows.map(r => LIVE_STATUSES.has(r.status) || r.status === "awaiting-steer" ? { ...r, error: "wait timeout" } : r);
+    if (timeout !== undefined && Date.now() - start >= timeout * 1000) return rows.map(r => LIVE_STATUSES.has(r.status) || r.status === "awaiting-steer" ? { ...r, error: r.error ?? "wait timeout" } : r);
     await delay(Math.min(pollMs, timeout === undefined ? pollMs : Math.max(1, timeout * 1000 - (Date.now() - start))));
   }
 }

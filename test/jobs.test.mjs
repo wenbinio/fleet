@@ -8,13 +8,15 @@ import { PassThrough } from "node:stream";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { ADAPTERS, ADVISOR_NOTICE } from "../runner/lib/adapters.mjs";
-import { accounts, parseModelIds } from "../runner/lib/accounts.mjs";
+import { accounts, parseModelIds, parseGrokModelIds } from "../runner/lib/accounts.mjs";
 import { atomicJson, startAsk, readAsk, runDirectory, liveStatus, waitRuns, validateAsk, listRuns, ASK_JOB } from "../runner/lib/jobs.mjs";
 import { runAskJob, backendCommand } from "../runner/ask-job.mjs";
 import { toolkitRepo } from "../runner/lib/toolkit-link.mjs";
 import { callTool, TOOLS, eventBeat } from "../mcp/fleet-mcp.mjs";
 import { cli } from "../runner/fleet.mjs";
 
+const grokModelsOutput = "You are not authenticated.\n\nDefault model: grok-4.7\n\nAvailable models:\n  * grok-4.7 (default)\n  - grok-4.7-build-fast\n  - grok-4.6\n  - grok-4.5";
+const grokModelIds = ["grok-4.7", "grok-4.7-build-fast", "grok-4.6", "grok-4.5"];
 function write(file, text) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); return file; }
 function fixture(t) {
   const scratch = fileURLToPath(new URL("../../../.test-tmp/", import.meta.url));
@@ -266,6 +268,31 @@ test("adapter table is the single source of backend contracts", () => {
   }
   assert.equal(TOOLS[0].inputSchema.properties.effort.type, "string");
   assert.deepEqual(TOOLS[0].inputSchema.properties.backend.enum, Object.keys(ADAPTERS));
+  const descriptions = Object.fromEntries(Object.entries(TOOLS[0].inputSchema.properties).filter(([, schema]) => schema.description).map(([name, schema]) => [name, schema.description]));
+  assert.deepEqual(descriptions, {
+    cwd: "Absolute folder the worker runs in.",
+    resume: "Earlier runId to continue.",
+    system: "System-prompt file path.",
+    images: "Absolute reference images.",
+    files: "Absolute paths sent to the advisor.",
+    lokAsked: "True only when Lok asked for Argon.",
+  });
+});
+test("wait and CLI expose the first 500 error characters for non-done runs and keep failure exit 1", async t => {
+  const f = fixture(t), error = "Useful failure reason. " + "x".repeat(700), ids = [];
+  for (const status of ["failed", "denied", "interrupted", "lost", "empty", "rate_limited", "daily_limit", "done"]) {
+    const runId = `wait-${status}`; ids.push(runId);
+    write(path.join(f.dataDir, "runs", runId, "run.json"), JSON.stringify({ kind: "ask", runId, backend: "api", status, error }));
+  }
+  const rows = await waitRuns(ids, { env: f.env });
+  assert.ok(rows.slice(0, -1).every(row => row.error === error.slice(0, 500)));
+  assert.equal(Object.hasOwn(rows.at(-1), "error"), false);
+  const output = [];
+  assert.equal(await cli(["wait", ...ids], { env: f.env, print: line => output.push(JSON.parse(line)) }), 1);
+  assert.deepEqual(output, rows);
+  assert.equal(await cli(["wait", ids.at(-1)], { env: f.env, print() {} }), 0);
+  write(path.join(f.dataDir, "runs", "failed-delegate", "state.json"), JSON.stringify({ status: "failed", error }));
+  assert.equal((await waitRuns(["failed-delegate"], { env: f.env }))[0].error, error.slice(0, 500));
 });
 test("Grok success, denied and resume preserve session and block duplicate live resumes", async t => {
   const f = fixture(t);
@@ -376,6 +403,30 @@ test("image validates refs, collects only new files with sizes, copies outputs a
   const failed = await runAskJob(empty.directory, { env: f.env, spawnBackend: backendFake(({ child }) => finish(child)) });
   assert.equal(failed.status, "failed"); assert.equal(failed.error, "no images produced");
 });
+test("image answer uses the last JSON agent message instead of trailing event records", async t => {
+  const f = fixture(t), { directory } = await reserve(f, { backend: "image" });
+  const answer = "Created the requested image.\n" + "details ".repeat(500);
+  const run = await runAskJob(directory, { env: f.env, spawnBackend: backendFake(({ child }) => {
+    write(path.join(directory, "image.png"), "image");
+    write(path.join(directory, "log.txt"), [
+      "plain startup message", "{invalid json",
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "earlier message" } }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: answer } }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1200, output_tokens: 300 } }),
+      "{unfinished",
+    ].join("\n"));
+    finish(child);
+  }) });
+  assert.equal(run.status, "done");
+  assert.equal(fs.readFileSync(path.join(directory, "answer.txt"), "utf8"), answer);
+  const emptyMessage = await reserve(f, { backend: "image" });
+  await runAskJob(emptyMessage.directory, { env: f.env, spawnBackend: backendFake(({ child }) => {
+    write(path.join(emptyMessage.directory, "image.webp"), "image");
+    write(path.join(emptyMessage.directory, "log.txt"), '{"type":"agent_message","text":""}\nplain trailing log');
+    finish(child);
+  }) });
+  assert.equal(fs.readFileSync(path.join(emptyMessage.directory, "answer.txt"), "utf8"), "");
+});
 test("advisor requires Lok, buffers waiting stderr, clears on challenge signal, and never retries", async t => {
   const f = fixture(t);
   await assert.rejects(reserve(f, { backend: "advisor" }), /advisor runs only when Lok asks for Argon/);
@@ -470,7 +521,7 @@ test("model menu discovers ids, caches no account data, refreshes sign-in and so
   f.env.FAKE_PROVIDER_KEY = randomUUID();
   const options = { env: f.env, dataDir: f.dataDir, now: () => 1000, discover: async name => {
     discoveries.push(name);
-    return { code: name === "grok" ? 1 : 0, stdout: name === "grok" ? "not authenticated\nAvailable: grok-4.7 grok-4.1" : "gemini-3.8-flash-low\nclaude-sonnet-4-6", stderr: "" };
+    return { code: name === "grok" ? 1 : 0, stdout: name === "grok" ? grokModelsOutput : "gemini-3.8-flash-low\nclaude-sonnet-4-6", stderr: "" };
   }, apiOptions: { keyReader: async () => f.env.FAKE_PROVIDER_KEY, fetch: async url => {
     requests.push(url);
     const data = url.endsWith("/models") ? [
@@ -492,7 +543,7 @@ test("model menu discovers ids, caches no account data, refreshes sign-in and so
   const by = name => rows.find(r => r.backend === name);
   assert.deepEqual(by("codex").models.map(m => [m.id, m.modelId]), [["astra", "gpt-6-astra"], ["sol", "gpt-6.1-sol"], ["luna", "gpt-6-luna"]]);
   assert.deepEqual(by("agy").models.map(m => m.id), ["gemini-3.8-flash-low", "claude-sonnet-4-6"]);
-  assert.deepEqual(by("grok").models.map(m => m.id), ["grok-4.7", "grok-4.1"]);
+  assert.deepEqual(by("grok").models.map(m => m.id), grokModelIds);
   assert.deepEqual(by("sound").models.map(m => m.id), ["sao", "moss"]);
   assert.equal(by("api").models.length, 3); assert.match(by("api").notes.join(" "), /catalogue size: 4/); assert.ok(!by("api").models.some(m => m.id.includes("paid")));
   assert.equal(by("advisor").signedIn, null); assert.match(by("advisor").notes[0], /only when Lok asks/);
@@ -515,6 +566,12 @@ test("model menu discovers ids, caches no account data, refreshes sign-in and so
   const printed = [];
   assert.equal(await cli(["accounts", "--backend", "advisor"], { env: f.env, menuOptions: options, apiOptions: options.apiOptions, print: text => printed.push(JSON.parse(text)) }), 0);
   assert.deepEqual(printed[0].map(r => r.backend), ["advisor"]);
+});
+test("Grok discovery only reads model bullets in Available models and ignores login links", () => {
+  assert.deepEqual(parseGrokModelIds(grokModelsOutput), grokModelIds);
+  assert.deepEqual(parseGrokModelIds("Sign in at https://grok.com\nDefault model: grok-4.7\n- grok-9"), []);
+  assert.deepEqual(parseGrokModelIds(`${grokModelsOutput}\n  - https://grok.com\n  - grok.com\n\nHelp: https://grok.com\n- grok-9`), grokModelIds);
+  assert.deepEqual(parseGrokModelIds("Available models:\n- grok-4.7\n- grok-4.7"), ["grok-4.7"]);
 });
 test("menu fallback excludes failed agy output and CLI forwards media options", async t => {
   const f = fixture(t);

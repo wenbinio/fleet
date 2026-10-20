@@ -49,6 +49,16 @@ function copyArtifacts(files, root, outDir) {
 }
 const imageFile = file => /\.(png|webp|jpe?g)$/i.test(file);
 const readText = file => { try { return fs.readFileSync(file, "utf8"); } catch (error) { if (error.code === "ENOENT") return ""; throw error; } };
+function imageAnswer(log) {
+  let answer;
+  for (const line of log.split(/\r?\n/)) {
+    try {
+      const event = JSON.parse(line), item = event.item ?? event;
+      if (item.type === "agent_message" && typeof item.text === "string") answer = item.text;
+    } catch { /* Mixed logs may contain plain text or incomplete JSON lines. */ }
+  }
+  return answer ?? log.slice(-3000);
+}
 const artifactTranscript = (run, context) => ({ ...textTranscript(run, context), details: { files: run.files ?? [] } });
 function sessionResume(opts, resumed, existing, backend, field) {
   if (!opts.resume) return;
@@ -163,7 +173,7 @@ export const ADAPTERS = {
     parse({ directory, run, state, exitCode, interrupted }) {
       const produced = artifactFiles(directory, imageFile).filter(file => !state.beforeFiles.has(file.path));
       const files = !exitCode && !interrupted ? copyArtifacts(produced, directory, run.outDir) : produced;
-      return { answer: readText(path.join(directory, "log.txt")).slice(-3000), metadata: { files }, status: !exitCode && produced.length ? "done" : "failed", ...(!produced.length ? { error: "no images produced" } : {}) };
+      return { answer: imageAnswer(readText(path.join(directory, "log.txt"))), metadata: { files }, status: !exitCode && produced.length ? "done" : "failed", ...(!produced.length ? { error: "no images produced" } : {}) };
     },
     transcript: artifactTranscript,
   },

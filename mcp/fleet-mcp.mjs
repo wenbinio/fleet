@@ -19,7 +19,7 @@ const TRUNCATION_NOTE = "\n\n[Transcript truncated to 40000 characters.]";
 const str = { type: "string" };
 const runSchema = objectSchema({ runId: str }, ["runId"]);
 export const TOOLS = [
-  { name: "fleet_ask", description: "Start a backend job and return its wait command.", inputSchema: objectSchema({ backend: { enum: BACKENDS }, prompt: str, promptFile: str, cwd: str, model: str, effort: str, readOnly: { type: "boolean" }, addDirs: { type: "array", items: str }, jsonSchema: str, resume: str, provider: str, maxTokens: { type: "integer", minimum: 1 }, maxCostUsd: { type: "number", minimum: 0 }, system: { type: "string", description: "System-prompt file path." }, images: { type: "array", items: str }, outDir: str, files: { type: "array", items: str }, lokAsked: { type: "boolean" }, engine: { enum: ["sao", "moss"] }, seconds: { type: "number", minimum: 0.5, maximum: 47 }, takes: { type: "integer", minimum: 1, maximum: 5 }, seed: { type: "integer" }, music: { type: "boolean" } }, ["backend"]) },
+  { name: "fleet_ask", description: "Start a backend job and return its wait command.", inputSchema: objectSchema({ backend: { enum: BACKENDS }, prompt: str, promptFile: str, cwd: { type: "string", description: "Absolute folder the worker runs in." }, model: str, effort: str, readOnly: { type: "boolean" }, addDirs: { type: "array", items: str }, jsonSchema: str, resume: { type: "string", description: "Earlier runId to continue." }, provider: str, maxTokens: { type: "integer", minimum: 1 }, maxCostUsd: { type: "number", minimum: 0 }, system: { type: "string", description: "System-prompt file path." }, images: { type: "array", items: str, description: "Absolute reference images." }, outDir: str, files: { type: "array", items: str, description: "Absolute paths sent to the advisor." }, lokAsked: { type: "boolean", description: "True only when Lok asked for Argon." }, engine: { enum: ["sao", "moss"] }, seconds: { type: "number", minimum: 0.5, maximum: 47 }, takes: { type: "integer", minimum: 1, maximum: 5 }, seed: { type: "integer" }, music: { type: "boolean" } }, ["backend"]) },
   { name: "fleet_runs", description: "List recent jobs, batches and delegates.", inputSchema: objectSchema({ limit: { type: "integer", minimum: 1, default: 20 }, backend: { enum: BACKENDS } }) },
   { name: "fleet_run", description: "Read one run's results and answer.", inputSchema: runSchema },
   { name: "fleet_transcript", description: "Read a run or batch task transcript.", inputSchema: objectSchema({ runId: str, taskId: str }, ["runId"]) },
@@ -312,7 +312,7 @@ async function handleMessage(message) {
     result(message.id, {
       protocolVersion: message.params?.protocolVersion ?? DEFAULT_PROTOCOL_VERSION,
       capabilities: { tools: {} },
-      serverInfo: { name: "fleet", version: "0.9.0" },
+      serverInfo: { name: "fleet", version: "0.9.1" },
     });
     return;
   }

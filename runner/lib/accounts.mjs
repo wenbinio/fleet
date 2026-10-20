@@ -8,6 +8,18 @@ import { BACKENDS } from "./adapters.mjs";
 
 const TTL = 10 * 60 * 1000;
 const models = (ids, cost, access) => ids.map(id => ({ id, cost, access }));
+export function parseGrokModelIds(text) {
+  const ids = new Set();
+  let available = false;
+  for (const line of String(text).split(/\r?\n/)) {
+    if (/^\s*Available models:\s*$/i.test(line)) { available = true; continue; }
+    if (!available || !line.trim()) continue;
+    if (!/^\s*[*-]\s+/.test(line)) { available = false; continue; }
+    const match = line.match(/^\s*[*-]\s+(grok-[a-zA-Z0-9][a-zA-Z0-9._-]*)(?:\s+\(default\))?\s*$/);
+    if (match) ids.add(match[1]);
+  }
+  return [...ids];
+}
 export function parseModelIds(text) {
   const ids = new Set();
   const add = id => { if (typeof id === "string" && /^[a-zA-Z0-9][a-zA-Z0-9/_.:-]*$/.test(id)) ids.add(id); };
@@ -38,7 +50,7 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
   const soundModels = () => models(["sao", "moss"].filter(engine => sound[engine]), "local", "sound");
   const aliases = Object.entries(runners.aliases).filter(([id]) => ["astra", "sol", "luna"].includes(id));
   // Fingerprints invalidate stale installation/provider menus without storing config or credentials.
-  const fingerprint = createHash("sha256").update(JSON.stringify([repo, aliases, services.map(s => [s.name, s.baseUrl]), config.soundVenv, config.mossVenv, config.soundDir, config.mossTools])).digest("hex");
+  const fingerprint = createHash("sha256").update(JSON.stringify([2, repo, aliases, services.map(s => [s.name, s.baseUrl]), config.soundVenv, config.mossVenv, config.soundDir, config.mossTools])).digest("hex");
   const cacheFile = path.join(dataDir, "model-menu.json");
   let cache;
   try { cache = JSON.parse(fs.readFileSync(cacheFile, "utf8")); } catch {}
@@ -52,7 +64,8 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
     const cliModels = async (name, fallback) => {
       try {
         const result = await discoverModels(name);
-        const ids = name === "agy" && result.code !== 0 ? [] : parseModelIds(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+        const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+        const ids = name === "grok" ? parseGrokModelIds(output) : result.code !== 0 ? [] : parseModelIds(output);
         return ids.length ? ids : [fallback];
       } catch { return [fallback]; }
     };

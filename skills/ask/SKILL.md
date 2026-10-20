@@ -33,11 +33,20 @@ file outside the target repo and pass `promptFile`. Never ask a worker to run te
 
 ## Run and wait
 
+Load the tools in one ToolSearch call: `select:mcp__plugin_fleet_fleet__fleet_ask,mcp__plugin_fleet_fleet__fleet_run,mcp__plugin_fleet_fleet__fleet_transcript`.
+Before an edit job, note `git status --porcelain` in the repo, so you can tell the worker's changes from ones that
+were already there.
+
+A fleet round trip costs you about 10k tokens. For a quick lookup in one file, reading it yourself is cheaper;
+delegate when the work would pull many files or long output into your context, or when you want the worker's own
+judgement, quota or media.
+
 1. Call `fleet_ask` with the backend, the prompt, `cwd` and any options. It returns a `runId` and a `wait` command
    at once.
-2. Start that `wait` command in a **background** shell. You'll be notified when it exits. Don't poll
-   `fleet_status` in a loop.
-3. Read the result from the wait output, or from `fleet_run` for the full answer. Use `fleet_transcript` only when
+2. Start that `wait` command in a **background** shell and act on the notice (a short job in a subagent can run it
+   in the foreground). Don't poll `fleet_status` in a loop. `wait` exits 1 if any run isn't `done`; the output
+   still holds every run's status, error and answer.
+3. The wait output has the answer (its last 6000 chars). Call `fleet_run` only for a longer answer or files. Use `fleet_transcript` only when
    you need to see what the worker did.
 
 To redirect a running job, call `fleet_interrupt` and ask again (codex and grok: `resume`). `fleet_steer` works
