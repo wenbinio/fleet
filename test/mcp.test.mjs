@@ -95,7 +95,7 @@ test("MCP server lists runs and queues only non-terminal delegate steering", { t
   await writeFile(path.join(lateLegacy, "answer.txt"), "copied before any tool call", "utf8");
 
   const child = spawn(process.execPath, [SERVER], {
-    env: { ...process.env, FLEET_WORKER: "", HOME: path.dirname(dataDir), USERPROFILE: path.dirname(dataDir), FLEET_HOME: path.dirname(dataDir), AGENT_TOOLKIT_HOME: "", CLAUDE_PLUGIN_DATA: "ignored" },
+    env: { ...process.env, FLEET_WORKER: "", FLEET_LOCAL_ROOT: path.join(dataDir, "absent-qwen"), HOME: path.dirname(dataDir), USERPROFILE: path.dirname(dataDir), FLEET_HOME: path.dirname(dataDir), AGENT_TOOLKIT_HOME: "", CLAUDE_PLUGIN_DATA: "ignored" },
     windowsHide: true,
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -115,7 +115,7 @@ test("MCP server lists runs and queues only non-terminal delegate steering", { t
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
 
   const listed = await rpc.request({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
-  assert.equal(listed.result.tools.length, 8);
+  assert.equal(listed.result.tools.length, 11);
 
   const runs = await rpc.request({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "fleet_runs", arguments: {} } });
   assert.equal(runs.result.isError, false);

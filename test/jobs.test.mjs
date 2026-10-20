@@ -25,8 +25,8 @@ function fixture(t) {
   const root = fs.mkdtempSync(path.join(scratch, "fleet-ask-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 }));
   const repo = path.join(root, "toolkit"), dataDir = path.join(root, "home", "fleet"), runsDir = path.join(root, "toolkit-runs");
-  const env = { ...process.env, FLEET_WORKER: "", FLEET_HOME: "", HOME: root, USERPROFILE: root, AGENT_TOOLKIT_HOME: path.join(root, "home"), CHATGPT_WEB_HOME: path.join(root, "chatgpt"), CLAUDE_PLUGIN_DATA: dataDir, FLEET_FAKE_RUNS: runsDir };
-  write(path.join(env.AGENT_TOOLKIT_HOME, "config.json"), JSON.stringify({ repo, providers: [{name:"openrouter",kind:"openai",baseUrl:"https://openrouter.invalid/api/v1",keyEnv:"FAKE_PROVIDER_KEY"}] }));
+  const env = { ...process.env, FLEET_WORKER: "", FLEET_LOCAL_ROOT: path.join(root, "absent-qwen"), FLEET_HOME: "", HOME: root, USERPROFILE: root, AGENT_TOOLKIT_HOME: path.join(root, "home"), CHATGPT_WEB_HOME: path.join(root, "chatgpt"), CLAUDE_PLUGIN_DATA: dataDir, FLEET_FAKE_RUNS: runsDir };
+  write(path.join(env.AGENT_TOOLKIT_HOME, "config.json"), JSON.stringify({ repo, local: { folder: path.join(root, "absent-qwen") }, providers: [{name:"openrouter",kind:"openai",baseUrl:"https://openrouter.invalid/api/v1",keyEnv:"FAKE_PROVIDER_KEY"}] }));
   write(path.join(repo, "lib/toolkit.mjs"), `
     import fs from "node:fs"; import path from "node:path";
     export const loadConfig = env => ({ ...JSON.parse(fs.readFileSync(path.join(env.AGENT_TOOLKIT_HOME,"config.json"),"utf8")), runsDir: env.FLEET_FAKE_RUNS });
@@ -78,7 +78,7 @@ function backendFake(action) {
   };
 }
 async function reserve(f, opts = {}) {
-  const result = await startAsk({ backend: "codex", prompt: "implement the thing", ...(["api", "image", "advisor", "chatgpt", "sound"].includes(opts.backend) ? {} : { cwd: f.root }), ...opts }, { env: f.env, spawnJob: detachedFake() });
+  const result = await startAsk({ backend: "codex", prompt: "implement the thing", ...(["api", "image", "advisor", "chatgpt", "sound", "local"].includes(opts.backend) ? {} : { cwd: f.root }), ...opts }, { env: f.env, spawnJob: detachedFake(), gpuOptions: { fetch: async url => ({ status: 200, text: async () => url.endsWith("/health") ? '{"status":"ok"}' : url.endsWith("/props") ? '{"is_sleeping":true}' : '{"models":[]}' }) } });
   return { result, directory: runDirectory(f.dataDir, result.runId) };
 }
 function finish(child, stdout = "", stderr = "", code = 0) {
@@ -102,7 +102,7 @@ test("effort validation and the MCP string schema share backend rules", async t 
   const f = fixture(t);
   const expected = {
     codex: ["low", "medium", "high", "xhigh"], image: ["low", "medium", "high", "xhigh"],
-    grok: ["low", "medium", "high", "xhigh", "future effort"], api: ["low", "medium", "high"], advisor: ["low", "medium", "high"],
+    grok: ["low", "medium", "high", "xhigh", "future effort"], api: ["low", "medium", "high"], advisor: ["low", "medium", "high"], local: ["low", "medium", "high"],
   };
   assert.deepEqual(new Set(Object.keys(EFFORT_RULES)), new Set(Object.keys(expected)));
   for (const [backend, values] of Object.entries(expected)) {
@@ -277,7 +277,7 @@ test("wait and CLI report terminal outcomes and timeout without mutating runs", 
 });
 test("MCP exposes eight concise tools and routes each kind including accounts and live events", async t => {
   const f = fixture(t), options = { env: f.env };
-  assert.deepEqual(TOOLS.map(t => t.name), ["fleet_ask", "fleet_runs", "fleet_run", "fleet_transcript", "fleet_status", "fleet_steer", "fleet_interrupt", "fleet_accounts"]);
+  assert.deepEqual(TOOLS.map(t => t.name), ["fleet_ask", "fleet_runs", "fleet_run", "fleet_transcript", "fleet_status", "fleet_steer", "fleet_interrupt", "fleet_accounts", "fleet_review", "fleet_shot", "fleet_deploy_wait"]);
   assert.ok(TOOLS.every(t => t.description.length < 120));
   for (const name of ["fleet_runs", "fleet_run", "fleet_transcript", "fleet_status", "fleet_accounts"]) assert.equal(TOOLS.find(t => t.name === name).annotations.readOnlyHint, true);
   const asked = await callTool("fleet_ask", { backend: "agy", prompt: "hello" }, { ...options, start: (opts, options) => startAsk(opts, { ...options, spawnJob: detachedFake() }) });
@@ -289,7 +289,7 @@ test("MCP exposes eight concise tools and routes each kind including accounts an
   await assert.rejects(callTool("fleet_steer", { runId: id, text: "continue" }, options), /fleet_ask with resume/);
   assert.equal((await callTool("fleet_interrupt", { runId: id }, options)).value.ok, true);
   assert.ok(fs.existsSync(path.join(directory, "interrupt.flag")));
-  assert.equal((await callTool("fleet_accounts", {}, { ...options, apiOptions: { keyReader: async () => null, fetch: async () => { throw new Error("fake unavailable catalog"); } } })).value.length, 9);
+  assert.equal((await callTool("fleet_accounts", {}, { ...options, apiOptions: { keyReader: async () => null, fetch: async () => { throw new Error("fake unavailable catalog"); } } })).value.length, 10);
   const delegate = path.join(f.dataDir, "runs", "delegate");
   write(path.join(delegate, "state.json"), '{"status":"awaiting-steer","turns":1}');
   write(path.join(delegate, "events.jsonl"), JSON.stringify({ type: "agentMessage", text: "old".repeat(100_000) }) + "\n" + Array.from({ length: 12 }, (_, i) => JSON.stringify({ type: "agentMessage", text: `beat-${i}` })).join("\n"));
@@ -320,7 +320,7 @@ test("MCP exposes eight concise tools and routes each kind including accounts an
   await assert.rejects(callTool("fleet_runs", { limit: -1 }, options), /positive integer/);
 });
 test("adapter table is the single source of backend contracts", () => {
-  assert.deepEqual(Object.keys(ADAPTERS), ["codex", "agy", "deepseek", "grok", "api", "image", "advisor", "chatgpt", "sound"]);
+  assert.deepEqual(Object.keys(ADAPTERS), ["codex", "agy", "deepseek", "grok", "api", "image", "advisor", "chatgpt", "sound", "local"]);
   for (const adapter of Object.values(ADAPTERS)) {
     assert.equal(typeof adapter.defaults, "object"); assert.ok(Array.isArray(adapter.allowed));
     for (const operation of ["command", "parse", "transcript"]) assert.equal(typeof adapter[operation], "function");
@@ -330,7 +330,8 @@ test("adapter table is the single source of backend contracts", () => {
   const descriptions = Object.fromEntries(Object.entries(TOOLS[0].inputSchema.properties).filter(([, schema]) => schema.description).map(([name, schema]) => [name, schema.description]));
   assert.deepEqual(descriptions, {
     cwd: "Absolute folder the worker runs in.",
-    effort: "codex/image: low|medium|high|xhigh; grok: any; api/advisor: low|medium|high; not chatgpt.",
+    timeout: "Seconds; local default 1200, chatgpt 1800.",
+    effort: "codex/image: low|medium|high|xhigh; grok: any; api/advisor/local: low|medium|high; not chatgpt.",
     resume: "Earlier runId to continue.",
     system: "System-prompt file path.",
     images: "Absolute reference images.",
@@ -543,7 +544,7 @@ test("ChatGPT adapter passes files/model/timeout and records every terminal outc
   const defaults = ADAPTERS.chatgpt.command({ ...ADAPTERS.chatgpt.defaults }, { directory: f.root, repo: f.repo });
   assert.equal(defaults.args[defaults.args.indexOf("--timeout") + 1], "1800");
   assert.ok(!defaults.args.includes("--keep-chat"));
-  assert.equal(TOOLS[0].inputSchema.properties.timeout, undefined); // Brief keeps MCP options unchanged.
+  assert.equal(TOOLS[0].inputSchema.properties.timeout.type, "number");
 });
 test("ChatGPT challenge state is live, counts toward cap, clears and preserves its answer", async t => {
   const f = fixture(t), { directory, result } = await reserve(f, { backend: "chatgpt" });

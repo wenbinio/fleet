@@ -7,11 +7,21 @@ import { setTimeout as delay } from "node:timers/promises";
 import { atomicJson, readJson } from "./lib/jobs.mjs";
 import { loadToolkit } from "./lib/runtime.mjs";
 import { workerEnv } from "../core/lib/worker.mjs";
+import { quotaLimited } from "../core/lib/quota.mjs";
 
 import { ADAPTERS } from "./lib/adapters.mjs";
 
 const OUTPUT_LIMIT = 2 * 1024 * 1024;
 export { finalText } from "./lib/adapters.mjs";
+export async function persistTerminal(file, value, { write = atomicJson, sleep = delay } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try { write(file, value); return; }
+    catch (error) {
+      if (!["EPERM", "EACCES", "EBUSY"].includes(error.code) || attempt >= 9) throw error;
+      await sleep(200);
+    }
+  }
+}
 export function backendCommand(run, directory, repo) { return ADAPTERS[run.backend].command(run, { directory, repo }); }
 export function killTree(child) {
   if (!child?.pid) return;
@@ -24,7 +34,7 @@ export function killTree(child) {
 }
 export async function runAskJob(directory, { env = process.env, spawnBackend = spawn, stopTree = killTree, pollMs = 1000, handoff = false, platform = process.platform } = {}) {
   const file = path.join(directory, "run.json");
-  let run = readJson(file), child, timer, interrupted = false;
+  let run = readJson(file), child, timer, interrupted = false, backendFinished = true;
   let stdout = Buffer.alloc(0), stderr = Buffer.alloc(0), answer = "", outputFd, jsonOutput = "";
   const adapter = ADAPTERS[run.backend], state = {};
   const append = (current, chunk) => current.length >= OUTPUT_LIMIT ? current : Buffer.concat([current, Buffer.from(chunk).subarray(0, OUTPUT_LIMIT - current.length)]);
@@ -53,6 +63,9 @@ export async function runAskJob(directory, { env = process.env, spawnBackend = s
       let pending = "", pendingError = "";
       if (fs.existsSync(path.join(directory, "interrupt.flag"))) { interrupted = true; break; }
       child = spawnBackend(exe, args, { cwd: run.cwd ?? directory, env: workerEnv({ ...env, AGENT_TOOLKIT_CAPTURE_ATTACHED: "1" }), windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+      backendFinished = false;
+      run.backendPid = child.pid;
+      atomicJson(file, run);
       child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
       child.stdout.on("data", chunk => {
         stdout = append(stdout, chunk);
@@ -76,6 +89,8 @@ export async function runAskJob(directory, { env = process.env, spawnBackend = s
         if (!interrupted && fs.existsSync(path.join(directory, "interrupt.flag"))) { interrupted = true; stopTree(child); }
       }, pollMs);
       exitCode = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", code => resolve(code ?? 1)); });
+      backendFinished = true;
+      atomicJson(path.join(directory, "backend-exit.json"), { runId: run.runId, startedAt: run.startedAt, exitCode, interrupted, endedAt: new Date().toISOString() });
       if (pending) line(pending);
       if (pendingError) stderrLine(pendingError);
       clearInterval(timer);
@@ -86,12 +101,13 @@ export async function runAskJob(directory, { env = process.env, spawnBackend = s
     answer = typeof parsed.answer === "string" ? parsed.answer : "";
     fs.writeFileSync(path.join(directory, "answer.txt"), answer);
     if (parsed.reasoning !== undefined) fs.writeFileSync(path.join(directory, "reasoning.txt"), parsed.reasoning);
-    const status = interrupted ? "interrupted" : parsed.status ?? (adapter.deniedCodes?.includes(exitCode) ? "denied" : exitCode !== 0 || !answer.trim() ? "failed" : "done");
+    const status = interrupted ? "interrupted" : parsed.status ?? (exitCode !== 0 && quotaLimited(stderr.toString("utf8")) ? "limit" : adapter.deniedCodes?.includes(exitCode) ? "denied" : exitCode !== 0 || !answer.trim() ? "failed" : "done");
     delete run.notice;
     run = { ...run, ...parsed.metadata, status, exitCode };
     if (status !== "done") run.error = status === "interrupted" ? "interrupted" : parsed.error || stderr.toString("utf8").slice(0, 2000) || (exitCode ? `exit ${exitCode}` : "empty answer");
     if (!parsed.status && !exitCode && !answer.trim() && !interrupted) run.error = "empty answer";
   } catch (error) {
+    if (child && !backendFinished) stopTree(child);
     delete run.notice;
     run = { ...run, status: interrupted ? "interrupted" : "failed", exitCode: 1, error: (stderr.toString("utf8") || error.message).slice(0, 2000) };
   } finally {
@@ -100,7 +116,11 @@ export async function runAskJob(directory, { env = process.env, spawnBackend = s
     fs.writeFileSync(path.join(directory, "stdout.txt"), stdout);
     fs.writeFileSync(path.join(directory, "stderr.txt"), stderr);
     if (!fs.existsSync(path.join(directory, "answer.txt"))) fs.writeFileSync(path.join(directory, "answer.txt"), answer);
-    atomicJson(file, { ...run, endedAt: new Date().toISOString(), durationMs: Date.now() - Date.parse(run.startedAt) });
+    const terminal = { ...run, endedAt: new Date().toISOString(), durationMs: Date.now() - Date.parse(run.startedAt) };
+    // The separate receipt survives a failed final rename and allows evidence-based
+    // recovery after this worker exits; it is never a substitute for a live worker.
+    await persistTerminal(path.join(directory, "completion.json"), terminal);
+    await persistTerminal(file, terminal);
   }
   return readJson(file);
 }

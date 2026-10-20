@@ -17,6 +17,7 @@ api:free api:free api:free`. With no targets, use three free api models from dif
    - Free api models may log or train on what they get. **Never fan private material** (client work, school
      documents, unreleased work) to them.
    - A paid api model needs its exact id, `maxCostUsd` and a reason.
+   - `local` keeps text on the existing Qwen / llama.cpp server and shares the GPU with sound; one local job at a time.
 2. Call `fleet_ask` once per target. agy and grok allow 4 live jobs each, and api allows 8; `fleet_ask` refuses
    more than that.
 3. Start one background `wait` with every runId (`node "${FLEET_ROOT}/runner/fleet.mjs" wait <id1> <id2> …`).

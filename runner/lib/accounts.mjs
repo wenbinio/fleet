@@ -8,6 +8,7 @@ import { loadToolkit } from "./runtime.mjs";
 import { atomicJson, listRuns } from "./jobs.mjs";
 import { BACKENDS } from "./adapters.mjs";
 import { effortNote } from "../../core/lib/effort.mjs";
+import { localStatus } from "../../core/lib/local.mjs";
 
 const TTL = 10 * 60 * 1000;
 const models = (ids, cost, access) => ids.map(id => ({ id, cost, access }));
@@ -51,14 +52,15 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
   dataDir ??= await resolveDataDir({ env });
   const { repo, toolkit } = await loadToolkit({ env });
   const [api, media, runners, webchat] = await Promise.all(["api", "media", "runners", "webchat/state"].map(name => import(pathToFileURL(path.join(repo, "lib", `${name}.mjs`)).href)));
-  const config = toolkit.loadConfig(env), services = enabled.includes("api") ? api.providers({ env }) : [];
+  const config = toolkit.loadConfig(env), services = enabled.includes("api") ? api.providers({ env }).filter(service => !service.local) : [];
+  const local = enabled.includes("local") ? await localStatus({ ...apiOptions, env, platform, config, probe: false }) : null;
   const sound = media.soundTools(config, { platform });
   const soundModels = () => models(["sao", "moss"].filter(engine => sound[engine]), "local", "sound");
   const chatState = webchat.readState(webchat.chatgptHome(env));
   const chatModels = () => models(chatState.models.length ? chatState.models : ["strongest"], "subscription", "text");
   const aliases = Object.entries(runners.aliases).filter(([id]) => ["astra", "sol", "luna"].includes(id));
   // Fingerprints invalidate stale installation/provider menus without storing config or credentials.
-  const fingerprint = createHash("sha256").update(JSON.stringify([4, enabled, repo, aliases, services.map(s => [s.name, s.baseUrl]), config.soundVenv, config.mossVenv, config.soundDir, config.mossTools])).digest("hex");
+  const fingerprint = createHash("sha256").update(JSON.stringify([6, enabled, repo, aliases, services.map(s => [s.name, s.baseUrl]), config.soundVenv, config.mossVenv, config.soundDir, config.mossTools])).digest("hex");
   const cacheFile = path.join(dataDir, "model-menu.json");
   let cache;
   try { cache = JSON.parse(fs.readFileSync(cacheFile, "utf8")); } catch {}
@@ -93,6 +95,7 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
       { backend: "advisor", models: models(["argon"], "subscription", "text"), notes: ["only when Lok asks"] },
       { backend: "chatgpt", models: chatModels(), notes: ["ChatGPT chat allowance; one prompt at a time, paced"] },
       { backend: "sound", models: soundModels(), notes: [] },
+      { backend: "local", models: [], notes: ["local only; no API key or usage cost", "Qwen / llama.cpp by default; GPU shared with sound; Qwen sleeps after five idle minutes"] },
     ];
     fs.mkdirSync(dataDir, { recursive: true });
     // Only the menu is cached: never accountStatus, sign-in detail, keys or raw CLI output.
@@ -107,7 +110,8 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
   const history = selected.some(row => row.backend === "api") ? await listRuns(dataDir, { backend: "api", limit: Number.MAX_SAFE_INTEGER }) : null;
   return Promise.all(selected.map(async row => {
     let status;
-    if (["codex", "agy", "grok", "deepseek", "image"].includes(row.backend)) {
+    if (row.backend === "local") status = local;
+    else if (["codex", "agy", "grok", "deepseek", "image"].includes(row.backend)) {
       status = await signIn(row.backend === "deepseek" ? "dsh" : row.backend === "image" ? "codex" : row.backend);
     } else if (row.backend === "api") {
       const service = services.find(service => service.name === row.provider);
@@ -123,6 +127,6 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
     // Derive effort notes after cache lookup so a cached catalog never freezes
     // backend option rules from an earlier release.
     const note = effortNote(row.backend), notes = [...row.notes.filter(note => !note.startsWith("effort:")), ...(note ? [note] : [])];
-    return { ...status, backend: row.backend, ...(row.provider ? { provider: row.provider } : {}), models: row.backend === "sound" ? soundModels() : row.backend === "chatgpt" ? chatModels() : row.models, notes };
+    return { ...status, backend: row.backend, ...(row.provider ? { provider: row.provider } : {}), models: row.backend === "local" ? models(local.models.map(model => model.id), "local", "text") : row.backend === "sound" ? soundModels() : row.backend === "chatgpt" ? chatModels() : row.models, notes };
   }));
 }

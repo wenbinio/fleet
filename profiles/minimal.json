@@ -1,9 +1,35 @@
 {
-  "backends": {"codex":true,"agy":false,"grok":false,"deepseek":false,"chatgpt":false,"api":true,"image":false,"advisor":false,"sound":false},
-  "hosts": ["claude"],
+  "backends": {
+    "codex": true,
+    "agy": false,
+    "grok": false,
+    "deepseek": false,
+    "chatgpt": false,
+    "api": true,
+    "image": false,
+    "advisor": false,
+    "sound": false,
+    "local": false
+  },
+  "hosts": [
+    "claude"
+  ],
   "autoApprove": "none",
   "rulings": {
     "codex": "Implementation and review through the configured Codex account.",
-    "api": "Free models by default; never send private material. Paid requires an exact model ID, maxCostUsd and a reason."
+    "api": "Free models by default; never send private material. Paid requires an exact model ID, maxCostUsd and a reason.",
+    "local": "Private local inference; shares GPU capacity with sound."
+  },
+  "review": {
+    "reviewers": [
+      "agy:gemini-3.8-flash-high",
+      "grok",
+      "api:free"
+    ]
+  },
+  "privatePaths": [],
+  "local": {
+    "default": null,
+    "models": []
   }
 }

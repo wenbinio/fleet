@@ -1,6 +1,6 @@
 ---
 name: ask
-description: Run one job on codex, agy, grok, deepseek, chatgpt, api (OpenRouter), image, sound or advisor — args: backend, then the task — and report the answer honestly.
+description: Run one job on codex, agy, grok, deepseek, chatgpt, api, local, image, sound or advisor — args: backend, then the task — and report the answer honestly.
 ---
 
 Fleet root: use `${CLAUDE_PLUGIN_ROOT}` in Claude Code; elsewhere use the fleet root in your AGENTS.md fleet block. Set `FLEET_ROOT` to that path for the commands below.
@@ -29,12 +29,22 @@ file outside the target repo and pass `promptFile`. Never ask a worker to run te
 - **chatgpt** uses Lok's ChatGPT chat allowance (separate from Codex): always GPT-6 at full power, about a minute a
   job, one at a time and at most 30 an hour. Text plus optional `files` to attach; no repo access. Use it for hard
   questions worth the wait. `paced` or `limit` means wait; never work around a CAPTCHA (`waiting_for_lok`).
+- **local** is Lok's Qwen 3.8 27B on this machine (`D:\AI\Qwen3.8-Abliterated`): text only, free, nothing
+  leaves the PC, so it's the place for private material. About 30–60 s a job; it shares the GPU with sound, so a
+  `gpu_busy` refusal means wait. → `docs/recipes/local.md`
 - **deepseek** edits `cwd`. Models `deepseek-flash` (default) and `deepseek-v4-pro`.
+- **local** is private text inference on the existing Qwen / llama.cpp server, no key or provider cost.
+  Optional effort is low, medium or high. It shares the GPU with sound and sleeps after five idle minutes;
+  never copy its GGUF into Ollama or stop the model after each job.
 - **api** sends text only: no files, no `cwd`. Put what it needs into the prompt.
   - With no model it uses OpenRouter's **free** router and records which model answered.
   - A paid model runs only if you name its exact id and set `maxCostUsd`, and only for a reason you state.
   - **Never send private material to free models** (client work, school documents, unreleased work, keys): they
     may log or train on it.
+
+Related tools: `fleet_review` (a diff to 2–3 cheap reviewers; only agreed findings come back), `fleet_shot`
+(phone/desktop screenshots, paths only), `fleet_deploy_wait` (poll a live file for a marker). Recipes in
+`docs/recipes/review.md` and `web-checks.md`.
 
 ## Run and wait
 
@@ -65,6 +75,7 @@ only on delegate runs.
 - `empty` (api): the model returned no answer; its reasoning is saved separately. `rate_limited` and `daily_limit`
   (api): say so, and never switch to a paid model to get around them.
 - `failed`, `lost` or `interrupted`: say so, with the error. An empty answer is a failure, not a result.
+- `limit`: quota or balance is exhausted; report it without retrying or substituting a paid model.
 - A codex `done` can still mean "I couldn't do it". Read the answer, and for edits check `git status` and the diff
   yourself before calling it done.
 - Say which backend and model answered (for api, the model that actually answered, and the cost). Keep an answer

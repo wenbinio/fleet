@@ -41,12 +41,16 @@ export function onPath(name, env = process.env, platform = process.platform) {
   return null;
 }
 export function resolveTool(name, { env = process.env, config = loadConfig(env), platform = process.platform } = {}) {
-  if (!toolNames.includes(name)) throw new Error(`Unknown tool: ${name}`);
+  if (!toolNames.includes(name) && name !== 'ollama') throw new Error(`Unknown tool: ${name}`);
   if (overrides[name] && env[overrides[name]]) return env[overrides[name]];
   const configured = config.tools?.[name] ?? config[name];
   if (typeof configured === 'string' && configured !== 'auto') return configured;
   // { strategy: 'discover' } deliberately re-evaluates the changing Codex hash directory.
   const local = env.LOCALAPPDATA;
+  if (name === 'ollama' && local) {
+    const file = path.join(local, 'Programs', 'Ollama', 'ollama.exe');
+    if (isFile(file)) return file;
+  }
   if (name === 'codex' && local) {
     const root = path.join(local, 'OpenAI', 'Codex', 'bin');
     let candidates = [];

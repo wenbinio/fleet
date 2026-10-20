@@ -1,6 +1,22 @@
 {
-  "backends": {"codex":true,"agy":true,"grok":true,"deepseek":true,"chatgpt":true,"api":true,"image":true,"advisor":true,"sound":true},
-  "hosts": ["claude","codex","grok","agy"],
+  "backends": {
+    "codex": true,
+    "agy": true,
+    "grok": true,
+    "deepseek": true,
+    "chatgpt": true,
+    "api": true,
+    "image": true,
+    "advisor": true,
+    "sound": true,
+    "local": true
+  },
+  "hosts": [
+    "claude",
+    "codex",
+    "grok",
+    "agy"
+  ],
   "autoApprove": "read-only",
   "rulings": {
     "codex": "Astra builds; Sol reviews and researches; Luna checks given ground truth.",
@@ -11,6 +27,19 @@
     "api": "Free models by default; no private material to free models. Paid only by exact ID with maxCostUsd and a reason.",
     "image": "Codex produces images from the art brief.",
     "advisor": "Gemini Argon only when Lok asks; CAPTCHA goes to Lok.",
-    "sound": "SAO by default; MOSS only when Lok names it."
+    "sound": "SAO by default; MOSS only when Lok names it.",
+    "local": "Private local inference; shares GPU capacity with sound."
+  },
+  "review": {
+    "reviewers": [
+      "agy:gemini-3.8-flash-high",
+      "grok",
+      "api:free"
+    ]
+  },
+  "privatePaths": [],
+  "local": {
+    "default": null,
+    "models": []
   }
 }

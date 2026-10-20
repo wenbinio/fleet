@@ -44,7 +44,7 @@ function fixture(t) {
   t.after(() => fs.rmSync(home, { recursive: true, force: true, maxRetries: 5 }));
   const env = { HOME: home, USERPROFILE: home, FLEET_HOME: path.join(home, "fleet-home"), AGENT_TOOLKIT_HOME: "", PATH: "", Path: "", CHATGPT_WEB_HOME: "", ADVISOR_HOME: "" };
   const calls = [], servers = {}, plugins = new Map(), markets = new Set(), codexPlugins = new Map(), codexMarkets = new Set(), inspections = [];
-  saveConfig({ tools: Object.fromEntries(["node", "codex", "claude", "grok", "agy"].map(name => [name, `fake-${name}`])) }, env);
+  saveConfig({ local: { folder: path.join(home, "absent-qwen") }, tools: Object.fromEntries(["node", "codex", "claude", "grok", "agy"].map(name => [name, `fake-${name}`])) }, env);
   write(path.join(home, ".grok/docs/user-guide/12-project-rules.md"), "Home rules: $GROK_HOME. AGENTS.md is loaded.");
   const version = JSON.parse(fs.readFileSync(path.join(ROOT, ".claude-plugin/plugin.json"), "utf8")).version;
   const run = async (exe, args) => {
@@ -72,7 +72,7 @@ function fixture(t) {
     }
     assert.fail(`unexpected invocation ${exe}: ${args}`);
   };
-  const options = { env, root: ROOT, run, inspect: async backend => { inspections.push(backend); return { found: true, signedIn: true, detail: "fixture account" }; } };
+  const options = { env, root: ROOT, run, existsLocal: () => false, inspect: async backend => { inspections.push(backend); return { found: true, signedIn: true, detail: "fixture account" }; } };
   return { home, env, calls, servers, plugins, markets, codexPlugins, codexMarkets, inspections, options, ...dataPaths({ env }) };
 }
 const readOnlyCall = call => call[1] === "--version" || ["mcp list", "mcp list --json", "mcp get fleet --json", "plugin list", "plugin marketplace list", "plugin list --json"].includes(call.slice(1).join(" "));
@@ -500,7 +500,7 @@ test("web backend plan and apply inspect files only and never launch Chrome", as
 });
 test("worker mode hides mutating tools and rejects direct MCP, CLI and start calls before side effects", async t => {
   const f = fixture(t), env = { ...f.env, FLEET_WORKER: "1" }, before = snapshot(f.home);
-  const denied = ["fleet_ask", "fleet_steer", "fleet_interrupt"];
+  const denied = ["fleet_ask", "fleet_steer", "fleet_interrupt", "fleet_review", "fleet_shot", "fleet_deploy_wait"];
   const names = toolsFor({ env }).map(tool => tool.name);
   assert.deepEqual(names, ["fleet_runs", "fleet_run", "fleet_transcript", "fleet_status", "fleet_accounts"]);
   const start = () => assert.fail("a worker must not reach a launcher");

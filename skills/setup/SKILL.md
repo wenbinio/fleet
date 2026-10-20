@@ -27,6 +27,10 @@ Call `fleet_accounts`. It reports every backend without credentials:
 - **grok**: the cached login in `~/.grok/auth.json` (by shape only; `grok models` falsely says "not
   authenticated").
 - **api**: each provider's key status (type, credit left, free requests today) and total spend.
+- **local**: the existing Qwen folder, `Start-Qwen.ps1` and verified receipt. Root precedence: `FLEET_LOCAL_ROOT`,
+  config `local.root`, legacy `local.folder`, then `D:/AI/Qwen3.8-Abliterated` on Windows only; otherwise set a root.
+  Setup configures llama.cpp on port 8088; never import/copy the GGUF into Ollama or download it again.
+  Ollama is optional only when explicitly configured. Setup never starts either server.
 
 **Never log in for Lok.** Print the command and let him run it: `codex login`, `agy`, `grok login` (browser), or the
 DeepSeek Harness app. Never read, print or copy a credential file's contents or a key.

@@ -1,6 +1,6 @@
 # Fleet
 
-Version **0.13.0**
+Version **0.14.1**
 
 ## New device, in three steps
 
@@ -34,7 +34,7 @@ start jobs. Removal unregisters selected hosts and removes owned links/managed r
 Only fleet tools annotated read-only are approved in Codex and agy. Existing Codex tool tables are preserved,
 including explicit prompt settings. Claude stays interactive; Grok has no documented per-tool approval rule.
 Applying `none` or removing a host deletes those read-only grants for the selected host. Other rules and
-mutating-tool approvals are untouched; the installer never grants `fleet_ask`, `fleet_steer` or `fleet_interrupt`.
+mutating-tool approvals are untouched; the installer never grants ask, steer, interrupt, review, shot or deploy-wait.
 The first change to each settings file creates a `.fleet-backup` containing its original bytes.
 
 The installer reports `done`, `auto`, and `needs-you` steps. It never performs logins, remote tool installations,
@@ -53,13 +53,32 @@ remain readable; the merge guard and verdict writer use legacy approvals when on
 Each MCP/CLI startup also copies any missing legacy run folders, leaving existing shared runs and originals intact.
 
 Every child process receives `FLEET_WORKER=1`. Workers retain read-only fleet tools but cannot start, steer or
-interrupt fleet jobs through MCP, and `fleet ask` refuses them. Codex workers disable fleet MCP per invocation
+interrupt fleet jobs through MCP; ask, review, shot and deploy-wait CLI commands refuse them. Codex workers disable fleet MCP per invocation
 unless user configuration is already ignored. Grok's bundled local documentation only describes persistent MCP
 disable commands, so its worker restriction uses the inherited environment without editing Grok configuration.
 
 Runtime layout: `core/lib/`, `core/bin/`, `core/deepseek/`, `backends/advisor/`, and bundled sound scripts under
 `backends/sound/`. Configured advisor and sound paths remain authoritative. In agent-toolkit, all old `bin/`,
 `lib/`, and advisor launch paths remain compatibility shims; root `setup.mjs` delegates its fleet steps here.
+
+## Review, local inference and browser checks
+
+`fleet_review` / `fleet review` sends an inline diff to several reviewers and returns a background wait command.
+Wait and `fleet_run` show agreed findings; `fleet_transcript` retains individual answers and failures. Reviews marked
+private, or matching profile `privatePaths`, replace free API reviewers with a ready local model or drop them with a notice.
+
+`fleet ask --backend local` uses the existing verified Qwen / llama.cpp installation selected by
+`FLEET_LOCAL_ROOT` > config `local.root` > legacy `local.folder` > `D:/AI/Qwen3.8-Abliterated` (Windows only).
+Other platforms require an explicit root. The server uses `127.0.0.1:8088`, with no key or provider cost. It starts through `Start-Qwen.ps1`
+when needed, never opens chat, and sleeps after five idle minutes. Low free VRAM is an offload note, not a refusal;
+sound waits until Qwen sleeps. Startup health polling has a separate 240-second deadline; generation defaults to
+20 minutes (`timeout` / `--timeout` in seconds). `fleet_status` shows startup and generation phases.
+Optional effort is low, medium or high. Ollama remains an explicit alternative;
+fleet never imports the GGUF or downloads another copy.
+
+`fleet_shot` / `fleet shot` saves responsive PNGs; `fleet_deploy_wait` / `fleet deploy-wait` waits for a marker and
+optionally reports Workers Builds checks. Both use fresh headless Chrome profiles over DevTools pipes and delete them
+after use. They never attach to an existing browser or deploy anything. See [usage and configuration](docs/recipes/review-local-shot.md).
 
 The existing Claude dispatch workflow follows.
 

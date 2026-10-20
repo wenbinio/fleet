@@ -11,6 +11,7 @@ export { BACKENDS, ASK_KEYS, TERMINAL_STATUSES } from "./adapters.mjs";
 import { toolkitRepo } from "./runtime.mjs";
 import { assertOrchestrator, workerEnv } from "../../core/lib/worker.mjs";
 import { validateEffort } from "../../core/lib/effort.mjs";
+import { gpuGuard } from "../../core/lib/local.mjs";
 
 export const FLEET_CLI = fileURLToPath(new URL("../fleet.mjs", import.meta.url));
 export const ASK_JOB = fileURLToPath(new URL("../ask-job.mjs", import.meta.url));
@@ -48,8 +49,9 @@ export function liveStatus(run, kill = process.kill) {
 }
 export function readAsk(directory) { return liveStatus(readJson(path.join(directory, "run.json"))); }
 export function kindOf(directory) {
-  return fs.existsSync(path.join(directory, "run.json")) ? "ask" : fs.existsSync(path.join(directory, "state.json")) ? "delegate" : "batch";
+  return fs.existsSync(path.join(directory, "run.json")) ? readJson(path.join(directory, "run.json")).kind ?? "ask" : fs.existsSync(path.join(directory, "state.json")) ? "delegate" : "batch";
 }
+export const storedKind = kind => ["ask", "review", "shot", "deploy_wait"].includes(kind);
 function nonempty(value, name) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${name} must be a non-empty string`);
 }
@@ -91,10 +93,12 @@ export function validateAsk(opts, { env = process.env } = {}) {
     }
   }
   if (opts.readOnly !== undefined && typeof opts.readOnly !== "boolean") throw new Error("readOnly must be a boolean");
+  if (opts.noPreamble !== undefined && typeof opts.noPreamble !== "boolean") throw new Error("noPreamble must be a boolean");
   for (const key of ["resume", "jsonSchema", "model", "provider", "system"]) if (opts[key] !== undefined) nonempty(opts[key], key);
   if (opts.system !== undefined && (!path.isAbsolute(opts.system) || !fs.statSync(opts.system).isFile())) throw new Error("system must be an absolute file path");
   if (opts.maxTokens !== undefined && (!Number.isSafeInteger(opts.maxTokens) || opts.maxTokens < 1)) throw new Error("maxTokens must be a positive integer");
   if (opts.maxCostUsd !== undefined && (!Number.isFinite(opts.maxCostUsd) || opts.maxCostUsd < 0)) throw new Error("maxCostUsd must be non-negative");
+  if (opts.responseFormat !== undefined && opts.responseFormat !== "json") throw new Error("responseFormat must be json");
   adapter.validate?.(opts);
 }
 async function withStartLock(root, action) {
@@ -119,8 +123,19 @@ async function withStartLock(root, action) {
   }
   try { return await action(); } finally { fs.rmSync(lock, { force: true }); }
 }
-export async function startAsk(opts, { env = process.env, dataDir, spawnJob = spawn } = {}) {
+export async function startAsk(opts, options = {}) {
+  const env = options.env ?? process.env;
   assertOrchestrator(env);
+  return reserveAsk(opts, options);
+}
+// Only the review coordinator can reserve child jobs; their subprocesses still
+// receive FLEET_WORKER=1 and cannot recursively invoke work-starting tools.
+export async function startReviewChild(opts, { reviewDirectory, ...options }) {
+  const parent = readAsk(reviewDirectory);
+  if (parent.kind !== "review" || parent.status !== "running" || !fs.existsSync(path.join(reviewDirectory, "review.json"))) throw new Error("review parent is not running");
+  return reserveAsk(opts, { ...options, parentRunId: parent.runId });
+}
+async function reserveAsk(opts, { env = process.env, platform = process.platform, dataDir, spawnJob = spawn, gpuOptions = {}, parentRunId } = {}) {
   validateAsk(opts, { env });
   const repo = toolkitRepo({ env }), adapter = ADAPTERS[opts.backend];
   dataDir ??= await resolveDataDir({ env });
@@ -137,7 +152,7 @@ export async function startAsk(opts, { env = process.env, dataDir, spawnJob = sp
     }
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
     const runId = `ask-${opts.backend}-${stamp}-${randomBytes(2).toString("hex")}`;
-    const prepared = await adapter.prepare?.(opts, { repo, env, runId, resumed });
+    const prepared = await adapter.prepare?.(opts, { repo, env, platform, runId, resumed });
     const directory = path.join(root, runId);
     fs.mkdirSync(directory);
     const prompt = opts.prompt ?? fs.readFileSync(opts.promptFile, "utf8");
@@ -147,11 +162,16 @@ export async function startAsk(opts, { env = process.env, dataDir, spawnJob = sp
       ...adapter.defaults,
       ...Object.fromEntries(adapter.allowed.filter(key => opts[key] !== undefined).map(key => [key, opts[key]])),
       ...prepared,
+      ...(parentRunId ? { parentRunId } : {}),
       status: "running", startedAt: new Date().toISOString(), pid: process.pid,
     };
     const file = path.join(directory, "run.json");
     atomicJson(file, run);
     try {
+      if (["local", "sound"].includes(opts.backend)) {
+        const guard = await gpuGuard(opts.backend, { ...gpuOptions, env, platform, existing, model: prepared?.model ?? opts.model, provider: prepared?.provider });
+        if (guard?.notice) { run.notice = guard.notice; run.note = guard.notice; }
+      }
       const child = spawnJob(process.execPath, [ASK_JOB, path.resolve(directory)], { detached: true, windowsHide: true, stdio: "ignore", env: workerEnv(env) });
       await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
       run.pid = child.pid;
@@ -160,10 +180,10 @@ export async function startAsk(opts, { env = process.env, dataDir, spawnJob = sp
       fs.writeFileSync(path.join(directory, "launch.ready"), "");
       child.unref();
     } catch (error) {
-      atomicJson(file, { ...run, status: "failed", endedAt: new Date().toISOString(), exitCode: 1, durationMs: Date.now() - Date.parse(run.startedAt), error: error.message });
+      atomicJson(file, { ...run, status: error.status === "gpu_busy" ? "gpu_busy" : "failed", endedAt: new Date().toISOString(), exitCode: 1, durationMs: Date.now() - Date.parse(run.startedAt), error: error.message });
       throw error;
     }
-    return { runId, backend: run.backend, model: run.model, status: "running", wait: `node "${FLEET_CLI}" wait ${runId}` };
+    return { runId, backend: run.backend, model: run.model, status: "running", ...(run.notice ? { notice: run.notice } : {}), wait: `node "${FLEET_CLI}" wait ${runId}` };
   });
 }
 export function capText(text, limit = 40_000, tail = false) {
@@ -188,9 +208,9 @@ export async function listRuns(dataDir, { limit = 20, backend } = {}) {
   for (const entry of entries.filter(e => e.isDirectory())) {
     try {
       const directory = runDirectory(dataDir, entry.name), kind = kindOf(directory);
-      const payload = kind === "ask" ? readAsk(directory) : readJson(path.join(directory, kind === "delegate" ? "state.json" : "results.json"));
+      const payload = storedKind(kind) ? readAsk(directory) : readJson(path.join(directory, kind === "delegate" ? "state.json" : "results.json"));
       const startedAt = payload.startedAt ?? fs.statSync(directory).mtime.toISOString();
-      const run = { runId: entry.name, kind, backend: kind === "ask" ? payload.backend : "codex", model: payload.model ?? null, status: payload.status ?? (payload.complete ? "done" : "running"), startedAt };
+      const run = { runId: entry.name, kind, backend: storedKind(kind) ? payload.backend ?? null : "codex", model: payload.model ?? null, status: payload.status ?? (payload.complete ? "done" : "running"), startedAt };
       if (kind === "batch") Object.assign(run, { complete: payload.complete === true, taskCount: (payload.results ?? []).length, statuses: (payload.results ?? []).map(r => (r.driver ?? r).status ?? "unknown") });
       const adapter = kind === "ask" ? ADAPTERS[payload.backend] : null;
       Object.assign(run, adapter?.row?.(payload));
@@ -201,6 +221,7 @@ export async function listRuns(dataDir, { limit = 20, backend } = {}) {
   return { runs: runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.runId.localeCompare(a.runId)).slice(0, limit), spendUsd };
 }
 export async function transcriptSource(directory, run, { env = process.env } = {}) {
+  if (run.kind && run.kind !== "ask") return { format: "text", directory, details: run.result };
   return ADAPTERS[run.backend].transcript(run, { directory, env });
 }
 export async function eventsFile(directory, run, options) { return (await transcriptSource(directory, run, options)).file ?? null; }
@@ -212,9 +233,9 @@ export async function waitRuns(ids, { dataDir, env = process.env, timeout, pollM
   for (;;) {
     const rows = directories.map(directory => {
       const kind = kindOf(directory);
-      const run = kind === "ask" ? readAsk(directory) : readJson(path.join(directory, kind === "delegate" ? "state.json" : "results.json"));
+      const run = storedKind(kind) ? readAsk(directory) : readJson(path.join(directory, kind === "delegate" ? "state.json" : "results.json"));
       const status = run.status ?? (run.complete ? "done" : "running");
-      return { runId: run.runId ?? path.basename(directory), backend: run.backend ?? "codex", model: run.model ?? null, status, ...(status !== "done" && typeof run.error === "string" ? { error: run.error.slice(0, 500) } : {}), ...(run.notice ? { notice: run.notice } : {}), ...(run.files ? { files: run.files } : {}), durationMs: run.durationMs ?? (run.startedAt ? Date.now() - Date.parse(run.startedAt) : null), answer: answerOf(directory, 6000, true) };
+      return { runId: run.runId ?? path.basename(directory), kind, backend: run.backend ?? (storedKind(kind) ? null : "codex"), model: run.model ?? null, status, ...(status !== "done" && typeof run.error === "string" ? { error: run.error.slice(0, 500) } : {}), ...(run.notice ? { notice: run.notice } : {}), ...(run.files ? { files: run.files } : {}), ...(run.result ?? {}), durationMs: run.durationMs ?? (run.startedAt ? Date.now() - Date.parse(run.startedAt) : null), ...(run.result ? {} : { answer: answerOf(directory, 6000, true) }) };
     });
     for (const row of rows) if (row.status === "waiting_for_lok" && !notified.has(row.runId)) { notified.add(row.runId); warn(`${row.runId}: ${row.notice}`); }
     if (rows.every(r => TERMINAL_STATUSES.has(r.status))) return rows;

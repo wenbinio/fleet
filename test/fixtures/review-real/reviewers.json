@@ -1,0 +1,20 @@
+[
+  {
+    "id": "agy:gemini-3.8-flash-high",
+    "status": "failed",
+    "runId": "ask-agy-20261020-183554-d1b0",
+    "error": "denied: ReadFile\n"
+  },
+  {
+    "id": "grok",
+    "status": "failed",
+    "runId": "ask-grok-20261020-183645-c7eb",
+    "error": "Internal error: {\n  \"message\": \"API error (status 402 Payment Required): Grok Build usage balance exhausted\",\n  \"http_status\": 402\n}\n"
+  },
+  {
+    "id": "api:free",
+    "status": "failed",
+    "runId": "ask-api-20261020-183654-76f6",
+    "error": "lost"
+  }
+]

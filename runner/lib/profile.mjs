@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { dataPaths } from "./data-dir.mjs";
 
-export const BACKEND_NAMES = ["codex", "agy", "deepseek", "grok", "api", "image", "advisor", "chatgpt", "sound"];
+export const BACKEND_NAMES = ["codex", "agy", "deepseek", "grok", "api", "image", "advisor", "chatgpt", "sound", "local"];
 export const PROFILE_ROOT = fileURLToPath(new URL("../../profiles/", import.meta.url));
 export const AUTO_APPROVE_POLICIES = Object.freeze(["none", "read-only"]);
 export function readProfile({ env = process.env, name, overrides = {} } = {}) {
@@ -19,7 +19,7 @@ export function readProfile({ env = process.env, name, overrides = {} } = {}) {
   }
   const autoApprove = base.autoApprove ?? "none";
   if (!AUTO_APPROVE_POLICIES.includes(autoApprove)) throw new Error("autoApprove must be none or read-only");
-  return { name, backends, hosts: base.hosts ?? [], autoApprove, rulings: base.rulings ?? {} };
+  return { name, backends, hosts: base.hosts ?? [], autoApprove, rulings: base.rulings ?? {}, review: base.review ?? { reviewers: [] }, privatePaths: base.privatePaths ?? [], local: base.local ?? { models: [], default: null } };
 }
 export const enabledBackends = options => BACKEND_NAMES.filter(name => readProfile(options).backends[name] === true);
 export function assertEnabled(backend, options) {
@@ -34,7 +34,7 @@ export function agentsBlock(profile, root) {
     `Fleet root: ${root}`, `CLI: node "${path.join(root, "runner", "fleet.mjs")}"`,
     ...enabled.map(name => `- ${name}: ${profile.rulings[name] ?? "available through fleet"}`),
     `This profile's autoApprove policy is ${profile.autoApprove}: the installer manages read-only fleet tool approvals in Codex and agy only.`,
-    "fleet_ask, fleet_steer and fleet_interrupt still ask for approval. Lok decides whether to grant those permissions; the installer never grants them.",
+    "fleet_ask, fleet_steer, fleet_interrupt, fleet_review, fleet_shot and fleet_deploy_wait still ask for approval. Lok decides whether to grant those permissions; the installer never grants them.",
     "Run `wait` in the background and act on its exit.", "<!-- fleet:end -->",
   ].join("\n");
 }

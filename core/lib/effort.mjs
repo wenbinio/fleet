@@ -9,6 +9,7 @@ export const EFFORT_RULES = Object.freeze({
   grok: null,
   api: standard,
   advisor: standard,
+  local: standard,
 });
 export const CHATGPT_EFFORT_ERROR = "chatgpt always runs at full power";
 export const supportsEffort = backend => Object.hasOwn(EFFORT_RULES, backend);

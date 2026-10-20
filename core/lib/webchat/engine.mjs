@@ -2,6 +2,15 @@ import { spawnWorker as spawn, workerEnv } from "../worker.mjs";
 import fs from "node:fs";
 
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+export function processExit(proc, timeoutMs = 5000) {
+  if (typeof proc.exitCode === "number" || proc.signalCode != null || proc.spawnfile && !proc.pid) return Promise.resolve(true);
+  return new Promise(resolve => {
+    const done = () => finish(true), errored = () => finish(!proc.pid), timedOut = () => finish(false);
+    const finish = exited => { clearTimeout(timer); proc.removeListener("exit", done); proc.removeListener("error", errored); resolve(exited); };
+    const timer = setTimeout(timedOut, timeoutMs);
+    proc.once("exit", done); proc.once("error", errored);
+  });
+}
 
 export function launchLogin(chrome, profile, url, { detached = false, spawnChrome = spawn } = {}) {
   fs.mkdirSync(profile, { recursive: true });
@@ -26,11 +35,12 @@ export function parseAdvisorArgs(argv) {
 }
 
 export class Browser {
-  static async launch(cfg, { show = false, profile = cfg.profile, menuText = "''", profileLabel = "advisor", spawnChrome = spawn } = {}) {
+  static async launch(cfg, { show = false, headless = false, profile = cfg.profile, menuText = "''", profileLabel = "advisor", spawnChrome = spawn } = {}) {
     fs.mkdirSync(profile, { recursive: true });
     const args = [
       `--user-data-dir=${profile}`,
       "--remote-debugging-pipe",
+      ...(headless ? ["--headless=new"] : []),
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-background-timer-throttling",
@@ -41,19 +51,27 @@ export class Browser {
       "about:blank",
     ];
     const proc = spawnChrome(cfg.chrome, args, { env: workerEnv(), stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"], windowsHide: false });
-    const b = new Browser(proc, { menuText });
+    let b;
+    try { b = new Browser(proc, { menuText }); }
+    catch (error) { const exited = processExit(proc); try { proc.kill(); } catch {} error.chromeStillRunning = !await exited; throw error; }
     b.show = show;
+    let launchTimer;
     const early = await Promise.race([
       new Promise((r) => proc.once("exit", (code) => r({ exited: code }))),
-      b.send("Browser.getVersion").then((v) => ({ ok: v })),
-      sleep(20000).then(() => ({ timeout: true })),
+      new Promise((r) => proc.once("error", error => r({ error }))),
+      b.send("Browser.getVersion").then((v) => ({ ok: v }), error => ({ error })),
+      new Promise(r => { launchTimer = setTimeout(() => r({ timeout: true }), 20000); }),
     ]);
+    clearTimeout(launchTimer);
     if (!early.ok) {
-      throw new Error(
+      const exited = early.error && !proc.pid ? Promise.resolve(true) : processExit(proc);
+      try { proc.kill(); } catch {}
+      const confirmedExit = await exited;
+      throw Object.assign(new Error(
         early.exited !== undefined
           ? `Chrome exited at once: the ${profileLabel} profile is probably already open in another Chrome window. Close it and retry.`
           : "Chrome did not answer on the DevTools pipe within 20 s."
-      );
+      ), { chromeStillRunning: !confirmedExit });
     }
     return b;
   }
@@ -79,6 +97,7 @@ export class Browser {
       for (const { rej } of this.pending.values()) rej(new Error("Chrome closed"));
       this.pending.clear();
     });
+    proc.on("error", error => { for (const { rej } of this.pending.values()) rej(error); this.pending.clear(); });
   }
 
   dispatch(msg) {
@@ -131,8 +150,12 @@ export class Browser {
   }
 
   async close() {
-    try { await Promise.race([this.send("Browser.close"), sleep(5000)]); } catch {}
+    let timer;
+    try { await Promise.race([this.send("Browser.close"), new Promise(resolve => { timer = setTimeout(resolve, 5000); })]); } catch {}
+    finally { clearTimeout(timer); }
+    const exited = processExit(this.proc);
     try { this.proc.kill(); } catch {}
+    return await exited;
   }
 }
 

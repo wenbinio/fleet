@@ -1,0 +1,9 @@
+diff --git a/cart.js b/cart.js
+--- a/cart.js
++++ b/cart.js
+@@ -4 +4 @@
+-  for (let i = 0; i < items.length; i++) {
++  for (let i = 0; i <= items.length; i++) {
+@@ -9 +9 @@
+-  return amount * (1 - percent / 100);
++  return amount * (1 - percent / 10);

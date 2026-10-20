@@ -1,0 +1,1 @@
+export const quotaLimited = text => /(?:\b(?:http[_ ]status|status|HTTP)\s*["':=(]*\s*402\b|\b402 Payment Required\b|usage balance exhausted|quota (?:exceeded|exhausted)|insufficient (?:credits|balance)|credit limit)/i.test(String(text));

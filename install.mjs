@@ -13,12 +13,18 @@ import { readProfile, BACKEND_NAMES, agentsBlock } from "./runner/lib/profile.mj
 import { inspectRegistration, registrationMatches, registrationUses, parseNamedInventory } from "./core/install-inventory.mjs";
 import { approvalPlan } from "./core/install-approvals.mjs";
 import { TOOLS } from "./mcp/fleet-mcp.mjs";
+import { localStatus, localProvider, localDefaults } from "./core/lib/local.mjs";
 export { setupClaude } from "./core/install-claude.mjs";
 // Root setup keeps its rows/flags and marketplace source, while using the same
 // installer implementation and default profile as standalone Claude installs.
-export async function setupToolkitFleet(options) {
-  await setupClaude(options);
-  if (!options.dryRun) {
+export async function setupToolkitFleet(options, { setup = setupClaude, exists = fs.existsSync } = {}) {
+  await setup(options);
+  const current = readConfig(options.env), configured = localDefaults(current, { exists, env: options.env, platform: options.platform });
+  if (JSON.stringify(current) !== JSON.stringify(configured)) {
+    if (options.dryRun || options.planOnly) options.report("local Qwen", "skipped", "would configure the existing Qwen model and starter; no model files copied");
+    else options.report("local Qwen", saveConfig(configured, options.env) ? "installed" : "ok", "configured existing Qwen / llama.cpp; no model files copied");
+  }
+  if (!options.dryRun && !options.planOnly) {
     const data = migrateData({ env: options.env }), file = path.join(data, "profile.json");
     if (!fs.existsSync(file)) writeJson(file, { name: "lok", backends: {} });
   }
@@ -51,6 +57,15 @@ function linkMatches(destination, source) {
 }
 function present(file) { try { fs.lstatSync(file); return true; } catch (error) { if (error.code === "ENOENT") return false; throw error; } }
 const quote = value => JSON.stringify(value);
+export function localSetupCommand(status, models = []) {
+  if (status.engine !== "ollama") return status.executable
+    ? `Use the existing verified Qwen installation at ${path.dirname(status.executable)}; repair Start-Qwen.ps1 and checks/model.json if missing. Do not copy or import its GGUF.`
+    : "Set local.root in config.json or FLEET_LOCAL_ROOT to the existing Qwen installation containing Start-Qwen.ps1 and checks/model.json. Do not copy or import its GGUF.";
+  if (!status.executable) return "Install Ollama yourself from https://ollama.com/download";
+  if (!status.found) return "ollama serve";
+  const downloads = models.length ? models.map(model => `ollama pull ${quote(model)}`).join("\n") : "Choose a local model with Lok, then add it to profile local.models and set config local.default.";
+  return `${downloads}\nMulti-GB downloads need Lok's yes. OLLAMA_MODELS may be set manually; fleet never changes it.`;
+}
 export function soundRecipe(root, home, { platform = process.platform } = {}) {
   const windows = platform === "win32", sound = path.join(root, "backends", "sound");
   const sao = path.join(home, "sound", "sao-venv"), moss = path.join(home, "sound", "moss-venv");
@@ -95,8 +110,15 @@ export function parseArgs(argv) {
   return opts;
 }
 export async function inspectBackend(backend, { env, config, run, root, platform, apiOptions = {}, readAuth } = {}) {
+  if (backend === "local") {
+    const service = localProvider(config, undefined, { env, platform });
+    if (service.engine !== "ollama") return { ...await localStatus({ ...apiOptions, env, platform, config, probe: false }), engine: service.engine, executable: service.start?.file };
+    const exe = resolveTool("ollama", { env, config, platform });
+    const status = await localStatus({ ...apiOptions, env, platform, config });
+    return { ...status, found: Boolean(exe) && status.found, executable: exe, engine: "ollama" };
+  }
   const name = ({ deepseek: "dsh", image: "codex", advisor: "chrome", chatgpt: "chrome", sound: "python" })[backend] ?? backend;
-  if (backend === "api") return accountStatus((config.providers ?? [defaultProvider(env)])[0], { env, run, platform, ...apiOptions });
+  if (backend === "api") return accountStatus(config.providers?.find(service => !service.local) ?? defaultProvider(env), { env, run, platform, ...apiOptions });
   const exe = resolveTool(name, { env, config, platform });
   if (!exe) return { found: false, signedIn: null, detail: `${name} not found` };
   // A GUI executable's --version may open a window. Inspect web backends only
@@ -121,6 +143,7 @@ const fixes = {
 export async function install(opts, {
   env = process.env, root = ROOT, platform = process.platform, run = capture,
   inspect = inspectBackend, apiOptions = {}, readAuth,
+  existsLocal = fs.existsSync,
   readDocument = readText,
 } = {}) {
   const home = toolkitHome(env), user = userHome(env);
@@ -143,9 +166,12 @@ export async function install(opts, {
     try { return await run(exe, args, { env, timeout: 30_000 }); } catch { return { code: 1, stdout: "", stderr: "command failed" }; }
   };
   if (!remove) {
-    const config = loadConfig(env), nextConfig = { ...config, ...soundDefaults(config) };
+    const config = loadConfig(env); let nextConfig = { ...config, ...soundDefaults(config) };
     if (!nextConfig.providers?.length) nextConfig.providers = [defaultProvider(env)];
     if (!nextConfig.chatgptWeb) nextConfig.chatgptWeb = { ...CHATGPT_DEFAULTS };
+    if (profile.backends.local) {
+      nextConfig = localDefaults(nextConfig, { exists: existsLocal, env, platform });
+    }
     const original = readConfig(env);
     add({ id: "config", status: JSON.stringify(original) === JSON.stringify(nextConfig) ? "done" : "auto", detail: "Fill missing runtime defaults; preserve configured paths and providers" }, () => saveConfig(nextConfig, env));
     const active = { name: profile.name };
@@ -155,12 +181,12 @@ export async function install(opts, {
     add({ id: "profile", status: JSON.stringify(oldProfile) === JSON.stringify(active) ? "done" : "auto", detail: `Use profile ${profile.name}` }, () => writeJson(path.join(data, "profile.json"), active));
     for (const backend of BACKEND_NAMES.filter(name => profile.backends[name])) {
       let status;
-      try { status = await inspect(backend, { env, config: nextConfig, run, root, platform, apiOptions, readAuth }); }
+      try { status = await inspect(backend, { env, config: nextConfig, run, root, platform, apiOptions: { exists: existsLocal, ...apiOptions }, readAuth }); }
       catch { status = { found: false, signedIn: null, detail: "Status unavailable; inspect the backend configuration" }; }
-      const missing = !status.found || status.signedIn === false;
+      const missing = !status.found || status.signedIn === false || backend === "local" && status.ready === false;
       const command = fixes[backend] ?? (backend === "chatgpt" ? `node ${quote(path.join(root, "core/lib/webchat/chatgpt.mjs"))} login` : backend === "advisor" ? `node ${quote(path.join(root, "backends/advisor/advisor.mjs"))} login` : backend === "api" ? `node ${quote(path.join(root, "install.mjs"))} --set-key openrouter` : `node ${quote(path.join(root, "install.mjs"))} --with sound`);
       const login = { codex: "codex login", image: "codex login", agy: "agy", grok: "grok login" }[backend];
-      const actionable = status.found && login ? login : backend === "grok" ? `${platform === "win32" ? "irm https://x.ai/cli/install.ps1 | iex" : "curl -fsSL https://x.ai/cli/install.sh | bash"}\ngrok login` : command;
+      const actionable = backend === "local" ? localSetupCommand(status, profile.local.models) : status.found && login ? login : backend === "grok" ? `${platform === "win32" ? "irm https://x.ai/cli/install.ps1 | iex" : "curl -fsSL https://x.ai/cli/install.sh | bash"}\ngrok login` : command;
       add({ id: `backend:${backend}`, backend, status: missing ? "needs-you" : "done", detail: `${status.detail || "available"}${status.version ? `; ${status.version}` : ""}${missing ? `; or use --off ${backend}` : ""}`, ...(missing ? { command: actionable } : {}) });
     }
     if (opts.with === "sound") add({ id: "sound:download", backend: "sound", status: "needs-you", detail: "Multi-GB venv/model installation; run manually after reviewing GPU, disk and licenses", command: soundRecipe(root, home, { platform }) });

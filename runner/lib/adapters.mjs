@@ -3,6 +3,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadToolkit } from "./runtime.mjs";
 import { supportsEffort } from "../../core/lib/effort.mjs";
+import { loadConfig } from "../../core/lib/toolkit.mjs";
+import { localProvider } from "../../core/lib/local.mjs";
 
 export function finalText(event) {
   const value = event.text ?? event.content ?? (typeof event.message === "string" ? event.message : event.message?.content) ?? (typeof event.data === "string" ? event.data : event.data?.text ?? event.data?.content) ?? event.output ?? event.answer ?? event.result;
@@ -107,10 +109,10 @@ export const ADAPTERS = {
   },
   agy: {
     defaults: { model: "gemini-3.8-flash-low" },
-    allowed: ["cwd", "model", "addDirs", "jsonSchema"], maxLive: 4, deniedCodes: [3],
+    allowed: ["cwd", "model", "addDirs", "jsonSchema", "noPreamble"], maxLive: 4, deniedCodes: [3],
     outputFile: "answer.txt",
-    command: (run, { directory, repo }) => runner(repo, "agy", [prompt(directory), "--model", run.model, ...(run.cwd ? ["--add-dir", run.cwd] : []), ...dirs(run), ...(run.jsonSchema ? ["--json-schema", run.jsonSchema] : [])]),
-    parse: ({ directory }) => ({ answer: fs.readFileSync(path.join(directory, "answer.txt"), "utf8") }),
+    command: (run, { directory, repo }) => runner(repo, "agy", [prompt(directory), "--model", run.model, ...(run.cwd ? ["--add-dir", run.cwd] : []), ...dirs(run), ...(run.jsonSchema ? ["--json-schema", run.jsonSchema] : []), ...(run.noPreamble ? ["--no-preamble"] : [])]),
+    parse: ({ directory, exitCode }) => ({ answer: fs.readFileSync(path.join(directory, "answer.txt"), "utf8"), ...(exitCode === 4 ? { status: "limit" } : {}) }),
     transcript: textTranscript,
   },
   deepseek: {
@@ -138,7 +140,8 @@ export const ADAPTERS = {
     resume: (opts, resumed, existing) => sessionResume(opts, resumed, existing, "grok", "session"),
     prepare: (opts, { resumed }) => resumed ? { resumeSession: resumed.session, session: resumed.session } : {},
     command: (run, { directory, repo }) => runner(repo, "grok", [prompt(directory), "--json", "--cwd", run.cwd ?? directory, "--model", run.model, ...(run.effort ? ["--effort", run.effort] : []), ...(run.resumeSession ? ["--resume", run.resumeSession] : [])]),
-    parse({ stdout, exitCode }) {
+    parse({ stdout, stderr, exitCode }) {
+      if (exitCode === 4) return { answer: "", status: "limit", error: stderr };
       if (exitCode !== 0 && exitCode !== 3) return { answer: "" };
       const data = jsonResult(stdout);
       return { answer: exitCode === 3 ? "" : data.answer ?? "", metadata: { session: data.sessionId, stopReason: data.stopReason, usage: data.usage } };
@@ -146,18 +149,19 @@ export const ADAPTERS = {
     transcript: (run, context) => ({ ...textTranscript(run, context), details: { stopReason: run.stopReason, usage: run.usage } }),
   },
   api: {
-    defaults: {}, allowed: ["provider", "model", "maxTokens", "maxCostUsd", "system"], maxLive: 8, json: true,
-    async prepare(opts, { repo, env }) {
+    defaults: {}, allowed: ["provider", "model", "maxTokens", "maxCostUsd", "system", "responseFormat"], maxLive: 8, json: true,
+    async prepare(opts, { repo, env, platform }) {
       const api = await import(pathToFileURL(path.join(repo, "lib", "api.mjs")).href);
-      const service = api.provider(opts.provider, { env });
+      const service = api.provider(opts.provider, { env, platform });
+      if (service.local) throw new Error("use backend local for the local provider");
       const rule = api.modelRules(opts.model, opts.maxCostUsd, service);
       return { provider: service.name, model: rule.model, requestedModel: rule.model, free: rule.free };
     },
-    command: (run, { directory, repo }) => runner(repo, "api", [prompt(directory), "--json", "--provider", run.provider, "--model", run.requestedModel ?? run.model, ...(run.effort !== undefined ? ["--effort", run.effort] : []), ...(run.maxTokens !== undefined ? ["--max-tokens", String(run.maxTokens)] : []), ...(run.maxCostUsd !== undefined ? ["--max-cost", String(run.maxCostUsd)] : []), ...(run.system ? ["--system", run.system] : [])]),
+    command: (run, { directory, repo }) => runner(repo, "api", [prompt(directory), "--json", "--provider", run.provider, "--model", run.requestedModel ?? run.model, ...(run.effort !== undefined ? ["--effort", run.effort] : []), ...(run.maxTokens !== undefined ? ["--max-tokens", String(run.maxTokens)] : []), ...(run.maxCostUsd !== undefined ? ["--max-cost", String(run.maxCostUsd)] : []), ...(run.system ? ["--system", run.system] : []), ...(run.responseFormat ? ["--response-format", run.responseFormat] : [])]),
     parse({ stdout, exitCode }) {
       if (!stdout.trim()) return { answer: "", status: exitCode === 3 ? "denied" : "failed" };
       const data = jsonResult(stdout);
-      if (!["done", "failed", "denied", "empty", "rate_limited", "daily_limit"].includes(data.outcome)) throw new Error("invalid API outcome");
+      if (!["done", "failed", "denied", "empty", "rate_limited", "daily_limit", "limit"].includes(data.outcome)) throw new Error("invalid API outcome");
       const metadata = Object.fromEntries(["model", "requestedModel", "provider", "free", "costUsd", "overCap", "usage"].filter(key => data[key] !== undefined).map(key => [key, data[key]]));
       return { answer: data.answer ?? "", reasoning: data.reasoning ?? "", status: data.outcome === "done" && exitCode !== 0 ? "failed" : data.outcome, error: data.error, metadata };
     },
@@ -249,7 +253,26 @@ export const ADAPTERS = {
     transcript: artifactTranscript,
   },
 };
+ADAPTERS.local = {
+  ...ADAPTERS.api, defaults: { timeout: 1200, phase: "starting-server" }, allowed: ["provider", "model", "maxTokens", "system", "responseFormat", "timeout"], maxLive: 1,
+  validate(opts) { if (opts.timeout !== undefined && (!Number.isFinite(opts.timeout) || opts.timeout <= 0)) throw new Error("timeout must be positive seconds"); },
+  prepare(opts, { env, platform }) {
+    const config = loadConfig(env), service = localProvider(config, opts.provider, { env, platform });
+    const model = opts.model ?? (opts.provider === undefined || opts.provider === (config.local?.provider ?? "local") ? config.local?.default : undefined) ?? service.model;
+    if (!model) throw new Error("local.default is not configured; choose an installed model");
+    return { model, requestedModel: model, provider: service.name, free: false };
+  },
+  command(run, context) { const command = ADAPTERS.api.command(run, context); command.args.push("--local"); if (run.timeout !== undefined) command.args.push("--timeout", String(run.timeout)); return command; },
+  stderrLine(line, state, run) {
+    try {
+      const event = JSON.parse(line);
+      if (["starting-server", "waiting-ready", "generating"].includes(event.fleetLocalPhase)) return { phase: event.fleetLocalPhase };
+      if (typeof event.fleetLocalNote === "string") return { notes: [...(run.notes ?? []), event.fleetLocalNote] };
+    } catch {}
+  },
+  spend: () => 0,
+};
 for (const [backend, adapter] of Object.entries(ADAPTERS)) if (supportsEffort(backend)) adapter.allowed.push("effort");
 export const BACKENDS = Object.keys(ADAPTERS);
 export const ASK_KEYS = [...new Set(["backend", "prompt", "promptFile", ...Object.values(ADAPTERS).flatMap(a => a.allowed)])];
-export const TERMINAL_STATUSES = new Set(["done", "failed", "denied", "interrupted", "lost", "empty", "rate_limited", "daily_limit", "signed_out", "limit", "paced"]);
+export const TERMINAL_STATUSES = new Set(["done", "failed", "denied", "interrupted", "lost", "empty", "rate_limited", "daily_limit", "signed_out", "limit", "paced", "gpu_busy"]);

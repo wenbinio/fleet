@@ -1,0 +1,14 @@
+{
+  "kind": "ask",
+  "runId": "ask-api-20261020-183654-76f6",
+  "backend": "api",
+  "model": "openrouter/free",
+  "responseFormat": "json",
+  "provider": "openrouter",
+  "requestedModel": "openrouter/free",
+  "free": true,
+  "parentRunId": "review-20261020T183553-4c02fc94",
+  "status": "running",
+  "startedAt": "2026-10-20T18:36:54.749Z",
+  "pid": 56256
+}

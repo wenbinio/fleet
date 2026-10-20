@@ -4,6 +4,8 @@ import path from 'node:path';
 import { CLI, capture, isMain, loadConfig, resolveTool } from './toolkit.mjs';
 import * as api from './api.mjs';
 import { effortValues, validateEffort } from './effort.mjs';
+import { localProvider, ensureLocalReady } from './local.mjs';
+import { quotaLimited } from './quota.mjs';
 
 export const aliases = { astra: 'gpt-6-astra', sol: 'gpt-6.1-sol', luna: 'gpt-6-luna' };
 const effortValue = value => validateEffort('codex', value);
@@ -83,6 +85,7 @@ export const preamble = 'Use only your file-reading tool to open files. Never ru
 export function classifyAgy(result, schema = false) {
   let data;
   try { data = JSON.parse(result.stdout); } catch {}
+  if (quotaLimited(`${JSON.stringify(data?.error ?? "")}\n${result.stderr}`)) return { code: 4, out: "", err: `${data?.error ? JSON.stringify(data.error) : result.stderr}\n` };
   if (data?.denied_actions?.length || /no output produced/i.test(result.stderr)) return { code: 3, out: '', err: `denied: ${data?.denied_actions?.map(a => a.display_name || a.action || String(a)).join(', ') || 'no output produced'}\n` };
   const structured = data?.structured_output;
   const hasStructured = structured != null && (typeof structured !== 'object' ? String(structured).trim().length > 0 : Object.keys(structured).length > 0);
@@ -114,6 +117,8 @@ export function classifyGrok(result) {
   let data;
   try { data = JSON.parse(result.stdout); } catch {}
   const fail = error => ({ code: 1, out: '', err: String(error || 'grok failed') + '\n' });
+  const diagnostic = `${data ? JSON.stringify({ message: data.message, error: data.error, http_status: data.http_status, status: data.status }) : result.stdout}\n${result.stderr}`;
+  if ((result.code !== 0 || data?.type === "error" || data?.stopReason !== "end_turn") && quotaLimited(diagnostic)) return { code: 4, out: "", err: String(data?.message || result.stderr || result.stdout).trim() + "\n", json: { outcome: "limit", answer: "", error: String(data?.message || result.stderr || result.stdout).trim() } };
   if (result.timedOut) return fail('grok timed out');
   if (result.code !== 0 || data?.type === 'error') return fail(data?.message || result.stderr || `grok exit ${result.code}`);
   if (!data || typeof data !== 'object' || Array.isArray(data)) return fail('grok failed: stdout is not JSON');
@@ -151,19 +156,30 @@ export async function grokRun(argv, { env = process.env, run = capture, stdout =
 }
 export async function apiRun(argv, { env = process.env, stdout = text => process.stdout.write(text), stderr = text => process.stderr.write(text), ...dependencies } = {}) {
   const opts = CLI(`api-run <prompt-file> [--provider P] [--model M] [--effort ${effortValues('api')}] [--max-tokens N] [--max-cost USD] [--system FILE] [--json] | --free-models [--provider P] [--n N]`, argv,
-    { values: ['provider', 'model', 'effort', 'max-tokens', 'max-cost', 'system', 'n'], booleans: ['json', 'free-models'] });
+    { values: ['provider', 'model', 'effort', 'max-tokens', 'max-cost', 'system', 'n', 'response-format', 'timeout'], booleans: ['json', 'free-models', 'local'] });
   if (!opts) return 0;
-  validateEffort('api', opts.effort);
-  const options = { env, ...dependencies }, service = api.provider(opts.provider, options);
+  validateEffort(opts.local ? 'local' : 'api', opts.effort);
+  const options = { env, ...dependencies }, service = opts.local ? localProvider(loadConfig(env), opts.provider, options) : api.provider(opts.provider, options);
+  if (service.local && (!opts.local || env.FLEET_WORKER !== "1")) throw new Error("use backend local through fleet so GPU reservations are enforced");
+  if (opts.timeout !== undefined && !service.local) throw new Error('--timeout is for local jobs');
+  const timeout = opts.timeout === undefined ? undefined : Number(opts.timeout);
+  if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)) throw new Error('timeout must be positive seconds');
   if (opts['free-models']) {
     if (opts._.length) throw new Error('--free-models does not accept a prompt file');
     stdout((await api.pickFree(positive(opts.n ?? 4, 'n'), service, options)).join('\n') + '\n');
     return 0;
   }
   if (opts._.length !== 1 || opts.n !== undefined) throw new Error('Provide one prompt file');
+  if (service.local) {
+    const onPhase = phase => stderr(JSON.stringify({ fleetLocalPhase: phase }) + '\n');
+    await ensureLocalReady({ ...options, service, runDir: path.dirname(path.resolve(opts._[0])), onPhase, onNote: note => stderr(JSON.stringify({ fleetLocalNote: note }) + '\n') });
+    onPhase('generating');
+  }
   const result = await api.chat(service, {
     prompt: fs.readFileSync(opts._[0], 'utf8'), model: opts.model,
+    ...(timeout !== undefined ? { timeout } : {}),
     ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
+    ...(opts['response-format'] !== undefined ? { responseFormat: opts['response-format'] } : {}),
     ...(opts.system ? { system: fs.readFileSync(opts.system, 'utf8') } : {}),
     ...(opts['max-tokens'] !== undefined ? { maxTokens: positive(opts['max-tokens'], 'max-tokens') } : {}),
     ...(opts['max-cost'] !== undefined ? { maxCostUsd: Number(opts['max-cost']) } : {}),
@@ -171,7 +187,7 @@ export async function apiRun(argv, { env = process.env, stdout = text => process
   if (opts.json) stdout(JSON.stringify({ ...result, reasoning: result.reasoning.slice(0, 20_000) }) + '\n');
   else if (result.answer) stdout(result.answer.trimEnd() + '\n');
   if (result.error) stderr(result.error + '\n');
-  return { done: 0, failed: 1, denied: 3, empty: 4, rate_limited: 5, daily_limit: 5 }[result.outcome] ?? 1;
+  return { done: 0, failed: 1, denied: 3, empty: 4, limit: 4, rate_limited: 5, daily_limit: 5 }[result.outcome] ?? 1;
 }
 export async function agyFan(argv) {
   const opts = CLI('agy-fan <prompt-file> (--target MODEL... | --n N [--model M]) [--max 4] [--timeout 600] [--add-dir D] [--json-schema S] [--no-preamble]', argv,

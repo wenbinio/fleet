@@ -9,7 +9,8 @@ import { constants as fsConstants, promises as fsp } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
-import { startAsk, listRuns, runDirectory, kindOf, readAsk, answerOf, capText, transcriptSource, BACKENDS } from "../runner/lib/jobs.mjs";
+import { startAsk, listRuns, runDirectory, kindOf, storedKind, readAsk, answerOf, capText, transcriptSource, BACKENDS } from "../runner/lib/jobs.mjs";
+import { startOperation, operationTranscript } from "../runner/lib/operations.mjs";
 import { accounts } from "../runner/lib/accounts.mjs";
 import { finalText } from "../runner/ask-job.mjs";
 
@@ -18,13 +19,13 @@ import { resolveDataDir } from "../runner/lib/data-dir.mjs";
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 const TERMINAL_STATUSES = new Set(["done", "interrupted", "failed"]);
 const TRANSCRIPT_LIMIT = 40_000;
-const WORKER_HIDDEN = new Set(["fleet_ask", "fleet_steer", "fleet_interrupt"]);
+const WORKER_HIDDEN = new Set(["fleet_ask", "fleet_steer", "fleet_interrupt", "fleet_review", "fleet_shot", "fleet_deploy_wait"]);
 const TRUNCATION_NOTE = "\n\n[Transcript truncated to 40000 characters.]";
 
 const str = { type: "string" };
 const runSchema = objectSchema({ runId: str }, ["runId"]);
 export const TOOLS = [
-  { name: "fleet_ask", description: "Start a backend job and return its wait command.", inputSchema: objectSchema({ backend: { enum: BACKENDS }, prompt: str, promptFile: str, cwd: { type: "string", description: "Absolute folder the worker runs in." }, model: str, keepChat: { type: "boolean" }, effort: { type: "string", description: EFFORT_DESCRIPTION }, readOnly: { type: "boolean" }, addDirs: { type: "array", items: str }, jsonSchema: str, resume: { type: "string", description: "Earlier runId to continue." }, provider: str, maxTokens: { type: "integer", minimum: 1 }, maxCostUsd: { type: "number", minimum: 0 }, system: { type: "string", description: "System-prompt file path." }, images: { type: "array", items: str, description: "Absolute reference images." }, outDir: str, files: { type: "array", items: str, description: "Absolute paths sent to the advisor." }, lokAsked: { type: "boolean", description: "True only when Lok asked for Argon." }, engine: { enum: ["sao", "moss"] }, seconds: { type: "number", minimum: 0.5, maximum: 47 }, takes: { type: "integer", minimum: 1, maximum: 5 }, seed: { type: "integer" }, music: { type: "boolean" } }, ["backend"]) },
+  { name: "fleet_ask", description: "Start a backend job and return its wait command.", inputSchema: objectSchema({ backend: { enum: BACKENDS }, prompt: str, promptFile: str, cwd: { type: "string", description: "Absolute folder the worker runs in." }, model: str, timeout: { type: "number", exclusiveMinimum: 0, description: "Seconds; local default 1200, chatgpt 1800." }, keepChat: { type: "boolean" }, effort: { type: "string", description: EFFORT_DESCRIPTION }, readOnly: { type: "boolean" }, addDirs: { type: "array", items: str }, jsonSchema: str, noPreamble: { type: "boolean" }, resume: { type: "string", description: "Earlier runId to continue." }, provider: str, maxTokens: { type: "integer", minimum: 1 }, maxCostUsd: { type: "number", minimum: 0 }, system: { type: "string", description: "System-prompt file path." }, images: { type: "array", items: str, description: "Absolute reference images." }, outDir: str, files: { type: "array", items: str, description: "Absolute paths sent to the advisor." }, lokAsked: { type: "boolean", description: "True only when Lok asked for Argon." }, engine: { enum: ["sao", "moss"] }, seconds: { type: "number", minimum: 0.5, maximum: 47 }, takes: { type: "integer", minimum: 1, maximum: 5 }, seed: { type: "integer" }, music: { type: "boolean" } }, ["backend"]) },
   { name: "fleet_runs", description: "List recent jobs, batches and delegates.", inputSchema: objectSchema({ limit: { type: "integer", minimum: 1, default: 20 }, backend: { enum: BACKENDS } }) },
   { name: "fleet_run", description: "Read one run's results and answer.", inputSchema: runSchema },
   { name: "fleet_transcript", description: "Read a run or batch task transcript.", inputSchema: objectSchema({ runId: str, taskId: str }, ["runId"]) },
@@ -32,6 +33,9 @@ export const TOOLS = [
   { name: "fleet_steer", description: "Queue a steering message for a delegate.", inputSchema: objectSchema({ runId: str, text: str }, ["runId", "text"]) },
   { name: "fleet_interrupt", description: "Request interruption of a job or delegate.", inputSchema: runSchema },
   { name: "fleet_accounts", description: "Show models and current sign-in status.", inputSchema: objectSchema({ backend: { enum: BACKENDS } }) },
+  { name: "fleet_review", description: "Review a diff across models and report agreed findings.", inputSchema: objectSchema({ repo: str, diffFile: str, range: str, branch: str, base: str, spec: str, reviewers: { type: "array", items: str }, minAgree: { type: "integer", minimum: 1, default: 2 }, private: { type: "boolean" }, maxCostUsd: { type: "number", minimum: 0, description: "Cap for each explicitly named paid API reviewer." } }, ["repo"]) },
+  { name: "fleet_shot", description: "Capture responsive screenshots in an isolated headless browser.", inputSchema: objectSchema({ url: str, dir: str, widths: { type: "array", items: { type: "integer" } }, waitFor: str, waitMs: { type: "number", minimum: 0 }, fullPage: { type: "boolean", default: true } }) },
+  { name: "fleet_deploy_wait", description: "Wait for a deployed marker and report matching build checks.", inputSchema: objectSchema({ url: str, path: str, marker: str, timeoutMin: { type: "number", default: 75 }, intervalSec: { type: "number", default: 60 }, repo: { type: "string", description: "GitHub owner/repo for optional checks." }, sha: str }, ["url", "path", "marker"]) },
 ].map(tool => ["fleet_runs", "fleet_run", "fleet_transcript", "fleet_status", "fleet_accounts"].includes(tool.name) ? { ...tool, annotations: { readOnlyHint: true } } : tool);
 
 function stringSchema(description) {
@@ -252,7 +256,7 @@ export function toolsFor({ env = process.env } = {}) {
   const allowed = new Set(["backend", "prompt", "promptFile", ...enabled.flatMap(name => ADAPTERS[name].allowed)]);
   return TOOLS.filter(tool => env.FLEET_WORKER !== "1" || !WORKER_HIDDEN.has(tool.name)).map(tool => ({ ...tool, inputSchema: { ...tool.inputSchema, properties: Object.fromEntries(Object.entries(tool.inputSchema.properties).filter(([key]) => tool.name !== "fleet_ask" || allowed.has(key)).map(([key, value]) => [key, key === "backend" ? { ...value, enum: enabled } : value])) } }));
 }
-export async function callTool(name, rawArguments, { env = process.env, dataDir, start = startAsk, apiOptions = {}, menuOptions = {} } = {}) {
+export async function callTool(name, rawArguments, { env = process.env, dataDir, start = startAsk, apiOptions = {}, menuOptions = {}, operationOptions = {} } = {}) {
   if (WORKER_HIDDEN.has(name)) assertOrchestrator(env);
   const args = rawArguments === undefined ? {} : requireObject(rawArguments, "arguments");
   if (name === "fleet_ask") validateEffort(args.backend, args.effort);
@@ -261,6 +265,7 @@ export async function callTool(name, rawArguments, { env = process.env, dataDir,
   const tool = toolsFor({ env }).find(tool => tool.name === name);
   if (!tool) throw new Error(`unknown tool: ${name}`);
   requireOnlyKeys(args, Object.keys(tool.inputSchema.properties));
+  if (["fleet_review", "fleet_shot", "fleet_deploy_wait"].includes(name)) return { value: await startOperation(name.slice(6), args, { ...operationOptions, env, dataDir }), json: true };
   if (name === "fleet_ask") return { value: await start(args, { env, dataDir }), json: true };
   if (name === "fleet_accounts") {
     return { value: await accounts({ ...menuOptions, ...args, env, dataDir, apiOptions }), json: true };
@@ -274,24 +279,26 @@ export async function callTool(name, rawArguments, { env = process.env, dataDir,
   }
   if (name === "fleet_interrupt") {
     if (kind === "delegate") return { value: await delegateInterrupt(dataDir, directory), json: true };
-    if (kind !== "ask") throw new Error("interrupt is for ask and delegate runs");
+    if (!storedKind(kind)) throw new Error("interrupt is for jobs and delegate runs");
     await atomicWriteJson(path.join(directory, "interrupt.flag"), { at: new Date().toISOString() });
     return { value: { ok: true, action: "interrupt", runId: path.basename(directory) }, json: true };
   }
   if (name === "fleet_run") {
+    if (storedKind(kind) && kind !== "ask") { const { result, ...run } = readAsk(directory); return { value: { ...run, ...result }, json: true }; }
     const value = kind === "ask" ? { ...readAsk(directory), answer: answerOf(directory) } : kind === "delegate" ? await delegateStatus(dataDir, directory) : await fleetRun(dataDir, directory);
     return { value, json: true };
   }
   if (name === "fleet_status") {
     if (kind === "delegate") return { value: await delegateStatus(dataDir, directory), json: true };
-    if (kind !== "ask") throw new Error("status is for ask and delegate runs; use fleet_run for batches");
+    if (!storedKind(kind)) throw new Error("status is for jobs and delegate runs; use fleet_run for batches");
     const run = readAsk(directory);
     const source = await transcriptSource(directory, run, { env });
     const tail = source.format === "text" ? await readTail(path.join(directory, "answer.txt"), 2000) : "";
     const beats = source.format === "text" ? (tail ? [oneLine(tail)] : []) : await eventBeats(source.file, 10);
-    return { value: { runId: run.runId, backend: run.backend, model: run.model, status: run.status, ...(run.notice ? { notice: run.notice } : {}), elapsedSeconds: Math.max(0, Math.floor((Date.parse(run.endedAt ?? new Date().toISOString()) - Date.parse(run.startedAt)) / 1000)), beats: beats.slice(-10) }, json: true };
+    return { value: { runId: run.runId, backend: run.backend, model: run.model, status: run.status, ...(run.phase ? { phase: run.phase } : {}), ...(run.notice ? { notice: run.notice } : {}), elapsedSeconds: Math.max(0, Math.floor((Date.parse(run.endedAt ?? new Date().toISOString()) - Date.parse(run.startedAt)) / 1000)), beats: beats.slice(-10) }, json: true };
   }
   if (name === "fleet_transcript") {
+    if (storedKind(kind) && kind !== "ask") return { value: capText(operationTranscript(directory, readAsk(directory))), json: false };
     if (kind === "batch") return { value: await fleetTranscript(dataDir, directory, requireString(args.taskId, "taskId")), json: false };
     if (args.taskId !== undefined) throw new Error("taskId is for batch runs only");
     const run = kind === "ask" ? readAsk(directory) : null;
@@ -325,7 +332,7 @@ async function handleMessage(message) {
     result(message.id, {
       protocolVersion: message.params?.protocolVersion ?? DEFAULT_PROTOCOL_VERSION,
       capabilities: { tools: {} },
-      serverInfo: { name: "fleet", version: "0.13.0" },
+      serverInfo: { name: "fleet", version: "0.14.1" },
     });
     return;
   }

@@ -4,11 +4,13 @@ import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { capture, loadConfig, toolkitHome } from './toolkit.mjs';
 import { validateEffort } from './effort.mjs';
+import { localProvider } from './local.mjs';
+import { quotaLimited } from './quota.mjs';
 
 export function defaultProvider(env = process.env) {
   return { name: 'openrouter', kind: 'openai', baseUrl: 'https://openrouter.ai/api/v1', keyFile: path.join(toolkitHome(env), 'secrets', 'openrouter.dpapi'), keyEnv: 'OPENROUTER_API_KEY' };
 }
-export function provider(name, { env = process.env, config = loadConfig(env) } = {}) {
+export function provider(name, { env = process.env, platform = process.platform, config = loadConfig(env) } = {}) {
   const entries = config.providers ?? [];
   const value = name === undefined ? entries[0] : entries.find(p => p.name === name);
   if (!value) throw new Error(`provider ${name ?? '(default)'} is not configured; run node setup.mjs`);
@@ -16,11 +18,12 @@ export function provider(name, { env = process.env, config = loadConfig(env) } =
   let url;
   try { url = new URL(value.baseUrl); } catch { throw new Error('invalid provider baseUrl'); }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('provider baseUrl must be an HTTP(S) URL without credentials, query or fragment');
+  if (value.local === true) return localProvider({ ...config, providers: [value] }, value.name, { env, platform });
   return Object.fromEntries(['name', 'kind', 'baseUrl', 'keyFile', 'keyEnv'].filter(k => value[k] !== undefined).map(k => [k, value[k]]));
 }
 export function providers(options = {}) {
   const env = options.env ?? process.env, config = options.config ?? loadConfig(env);
-  return (config.providers ?? []).map(p => provider(p.name, { env, config }));
+  return (config.providers ?? []).map(p => provider(p.name, { env, config, platform: options.platform }));
 }
 export async function readKey(service, { env = process.env, platform = process.platform, run = capture } = {}) {
   if (platform === 'win32' && service.keyFile && fs.existsSync(service.keyFile)) {
@@ -46,18 +49,19 @@ class ApiError extends Error {
 }
 const finite = value => (typeof value === 'number' || typeof value === 'string' && value.trim() !== '') && Number.isFinite(Number(value)) ? Number(value) : null;
 const endpoint = (service, suffix) => service.baseUrl.replace(/\/+$/, '') + suffix;
-async function request(service, suffix, { key, redactKey = key, method = 'GET', body, fetch: fetcher = globalThis.fetch } = {}) {
+async function request(service, suffix, { key, redactKey = key, method = 'GET', body, fetch: fetcher = globalThis.fetch, timeoutMs, timeoutSignal = AbortSignal.timeout } = {}) {
   try {
     const response = await fetcher(endpoint(service, suffix), {
-      method, redirect: 'error', signal: AbortSignal.timeout(30_000),
+      method, redirect: 'error', signal: timeoutSignal(timeoutMs ?? (service.local ? 1_200_000 : 30_000)),
       headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
+    const text = await response.text();
     let data;
-    try { data = JSON.parse(await response.text()); }
+    try { data = JSON.parse(text); }
     catch { data = { error: { message: 'provider returned invalid JSON' } }; }
     return { status: response.status, ok: response.ok ?? (response.status >= 200 && response.status < 300), headers: response.headers, data: scrub(data, redactKey) };
-  } catch (error) { throw new ApiError(scrub(error.message || 'provider request failed', redactKey), 0); }
+  } catch (error) { throw new ApiError(scrub(['AbortError', 'TimeoutError'].includes(error.name) ? 'provider request timed out' : error.message || 'provider request failed', redactKey), 0); }
 }
 const message = response => response.data?.error?.message ?? (typeof response.data?.error === 'string' ? response.data.error : null) ?? response.data?.message ?? `HTTP ${response.status}`;
 const header = (response, name) => response.headers?.get?.(name) ??
@@ -89,6 +93,11 @@ export async function keyStatus(service, options = {}) {
 export function modelRules(model, maxCostUsd, service = { name: 'openrouter' }) {
   if (model !== undefined && (typeof model !== 'string' || !model.trim())) throw new Error('model must be a non-empty string');
   if (maxCostUsd !== undefined && (!Number.isFinite(maxCostUsd) || maxCostUsd < 0)) throw new Error('maxCostUsd must be non-negative');
+  if (service.local === true) {
+    localProvider({ providers: [service] }, service.name, { env: {} });
+    if (!model) throw new Error('local.default is not configured; choose an installed model');
+    return { model, free: false, local: true };
+  }
   const automatic = model === undefined || ['free', 'auto', 'openrouter/free'].includes(model);
   if (automatic && service.name !== 'openrouter') throw new Error(`name an explicit model for provider ${service.name}`);
   const requested = automatic ? 'openrouter/free' : model;
@@ -171,20 +180,23 @@ function dailyLimited(response, now) {
 export async function chat(service, opts, options = {}) {
   // Model authorization is checked before key introspection, catalog or inference.
   const rule = modelRules(opts.model, opts.maxCostUsd, service);
-  validateEffort('api', opts.effort);
+  validateEffort(service.local ? 'local' : 'api', opts.effort);
+  if (opts.responseFormat !== undefined && opts.responseFormat !== 'json') throw new Error('responseFormat must be json');
   if (typeof opts.prompt !== 'string' || !opts.prompt.trim()) throw new Error('prompt must be non-empty');
   if (opts.system !== undefined && typeof opts.system !== 'string') throw new Error('system must be text');
   if (opts.maxTokens !== undefined && (!Number.isSafeInteger(opts.maxTokens) || opts.maxTokens < 1)) throw new Error('maxTokens must be a positive integer');
+  if (opts.timeout !== undefined && (!service.local || !Number.isFinite(opts.timeout) || opts.timeout <= 0)) throw new Error('timeout must be positive seconds for local jobs');
+  const requestOptions = service.local && opts.timeout !== undefined ? { ...options, timeoutMs: Math.ceil(opts.timeout * 1000) } : options;
   let key;
   const base = { answer: '', reasoning: '', model: rule.model, requestedModel: rule.model, provider: service.name, free: rule.free, usage: {}, costUsd: 0, overCap: false };
   const outcome = (status, extra = {}) => scrub({ outcome: status, ...base, ...extra }, key);
   try {
-    key = await (options.keyReader ?? readKey)(service, options);
-    if (!key) return outcome('denied', { error: `key unavailable; set ${service.keyEnv || 'the provider keyEnv'} or create its DPAPI file` });
-    const status = await keyStatus(service, { ...options, key });
+    key = service.local ? undefined : await (options.keyReader ?? readKey)(service, options);
+    if (!service.local && !key) return outcome('denied', { error: `key unavailable; set ${service.keyEnv || 'the provider keyEnv'} or create its DPAPI file` });
+    const status = service.local ? { type: 'inference' } : await keyStatus(service, { ...options, key });
     if (['management', 'provisioning'].includes(status.type)) return outcome('denied', { error: 'this is a management key; use an inference key' });
     let maxTokens = opts.maxTokens;
-    if (!rule.free) {
+    if (!rule.free && !service.local) {
       // A cap cannot be estimated without prices, even when maxTokens is supplied.
       const model = (await catalog(service, { ...options, redactKey: key })).find(m => m.id === rule.model);
       if (!model || model.pricing.prompt === null || model.pricing.completion === null || model.pricing.prompt < 0 || model.pricing.completion < 0) return outcome('failed', { error: 'model pricing unavailable; this provider must publish prompt/completion pricing before a paid job can be capped' });
@@ -199,14 +211,25 @@ export async function chat(service, opts, options = {}) {
         if (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens === Number.MAX_SAFE_INTEGER) return outcome('failed', { error: 'maxCostUsd leaves no bounded completion budget; supply maxTokens' });
       }
     }
-    const body = { model: rule.model, messages: [...(opts.system ? [{ role: 'system', content: opts.system }] : []), { role: 'user', content: opts.prompt }], ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}), ...(opts.effort !== undefined ? { reasoning: { effort: opts.effort } } : {}) };
+    const body = { model: rule.model, messages: [...(opts.system ? [{ role: 'system', content: opts.system }] : []), { role: 'user', content: opts.prompt }], ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}), ...(opts.effort !== undefined ? service.local ? { reasoning_effort: opts.effort } : { reasoning: { effort: opts.effort } } : {}) };
+    if (service.local && service.engine === 'ollama') body.keep_alive = 0;
+    if (opts.responseFormat) body.response_format = { type: "json_object" };
     let response;
     for (let attempt = 0; attempt <= 3; attempt++) {
-      response = await request(service, '/chat/completions', { ...options, key, method: 'POST', body });
+      response = await request(service, '/chat/completions', { ...requestOptions, key, method: 'POST', body });
+      if (service.local && service.engine === 'ollama' && response.status === 400 && /keep_alive|unknown field|unsupported field/i.test(String(message(response)))) {
+        const native = { ...service, baseUrl: new URL("/", service.baseUrl).href };
+        response = await request(native, '/api/chat', { ...requestOptions, method: 'POST', body: {
+          model: body.model, messages: body.messages, stream: false, keep_alive: 0,
+          ...(opts.responseFormat ? { format: 'json' } : {}),
+          ...(maxTokens !== undefined ? { options: { num_predict: maxTokens } } : {}),
+        } });
+        if (response.ok && !response.data.error) response.data = { model: response.data.model, choices: [{ message: response.data.message }], usage: {} };
+      }
       if ((!response.ok || response.data?.error) && modelUnavailable(String(message(response)))) {
         // Record only the requested model and date, never the provider's error or key.
         // A cache-write failure must not turn a model-availability failure into denial.
-        try { markUnusable(service, scrub(rule.model, key), options); } catch {}
+        if (!service.local) try { markUnusable(service, scrub(rule.model, key), options); } catch {}
         return outcome('failed', { error: message(response) });
       }
       if (response.status !== 429) break;
@@ -218,17 +241,19 @@ export async function chat(service, opts, options = {}) {
       const retryAt = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(retry) - now;
       await (options.sleep ?? delay)(Number.isFinite(retryAt) && retryAt >= 0 ? retryAt : 2000 * 2 ** attempt);
     }
+    if ((!response.ok || response.data?.error) && (response.status === 402 || quotaLimited(message(response)))) return outcome('limit', { error: message(response) });
     if ([401, 403].includes(response.status)) return outcome('denied', { error: message(response) });
     if (!response.ok || response.data?.error) return outcome('failed', { error: message(response) });
     const data = response.data, content = data.choices?.[0]?.message;
     const answer = typeof content?.content === 'string' ? content.content : '';
     const reasoning = typeof content?.reasoning === 'string' ? content.reasoning : typeof content?.reasoning_content === 'string' ? content.reasoning_content : '';
     const usage = data.usage && typeof data.usage === 'object' ? data.usage : {};
-    const costUsd = finite(usage.cost) ?? 0;
+    const costUsd = service.local ? 0 : finite(usage.cost) ?? 0;
     return outcome(answer.trim() ? 'done' : 'empty', { answer, reasoning, model: typeof data.model === 'string' ? data.model : rule.model, usage, costUsd, overCap: opts.maxCostUsd !== undefined && costUsd > opts.maxCostUsd, ...(!answer.trim() ? { error: 'empty answer' } : {}) });
-  } catch (error) { return outcome(!key || [401, 403].includes(error.status) ? 'denied' : 'failed', { error: key ? scrub(error.message || 'API request failed', key) : 'key unavailable or unreadable' }); }
+  } catch (error) { return outcome((key || service.local) && (error.status === 402 || quotaLimited(error.message)) ? 'limit' : service.local ? 'failed' : !key || [401, 403].includes(error.status) ? 'denied' : 'failed', { error: service.local ? error.message : key ? scrub(error.message || 'API request failed', key) : 'key unavailable or unreadable' }); }
 }
 export async function accountStatus(service, options = {}) {
+  if (service.local) return { backend: 'local', provider: service.name, found: true, signedIn: null, detail: 'local provider; no API key or usage cost' };
   let key;
   try {
     key = await (options.keyReader ?? readKey)(service, options);
