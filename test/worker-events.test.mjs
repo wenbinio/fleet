@@ -21,7 +21,7 @@ const ERROR = "Failed to create unified exec process: helper_unknown_error: setu
 // Replay protocol frames in memory as well as testing the executable fixtures.
 // This exercises collectors even in environments that forbid child processes.
 async function replaySpawn(t, { failed = false, hold = false, chatOnly = false } = {}) {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), "codex-fleet-replay-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "fleet-replay-"));
   const calls = [];
   const requests = [];
   const children = new Map();
@@ -186,7 +186,7 @@ test("setup mode selection requires shell evidence and explicit unelevated opt-i
 });
 
 test("configuration validators reject isolation and sandbox typos before repository access", async (t) => {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), "codex-fleet-validation-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "fleet-validation-"));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   const batch = { repo: cwd, codexExe: "codex", backend: "exec", tasks: [{ id: "example", spec: "test" }] };
   const taskPath = path.join(cwd, "task.json");

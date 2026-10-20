@@ -1,10 +1,10 @@
-# Codex Fleet
+# Fleet
 
 Version **0.6.2**
 
 **Claude plans, reviews, and integrates; Codex writes the code — and nothing lands until an adversarial reviewer independently re-runs the tests and passes it.**
 
-Codex Fleet is a Claude Code plugin that treats LLM-generated code as an untrusted supply chain. You describe the work; Claude drafts grounded task specs and dispatches OpenAI Codex (`gpt-5.6-sol`) workers; each worker runs in its own isolated Git worktree; the Claude driver verifies the result *outside* Codex's sandbox; a separate adversarial reviewer re-runs the verification independently before anything is approved; and only approved work is integrated — landing as one verified, staged diff in your working tree, exactly like a native Claude Code edit.
+Fleet is a Claude Code plugin that treats LLM-generated code as an untrusted supply chain. You describe the work; Claude drafts grounded task specs and dispatches OpenAI Codex (`gpt-5.6-sol`) workers; each worker runs in its own isolated Git worktree; the Claude driver verifies the result *outside* Codex's sandbox; a separate adversarial reviewer re-runs the verification independently before anything is approved; and only approved work is integrated — landing as one verified, staged diff in your working tree, exactly like a native Claude Code edit.
 
 ```text
 you describe work
@@ -17,9 +17,9 @@ you describe work
 
 ## Why this instead of…
 
-**…just telling Codex to do it?** A bare `codex exec` gives you code and a hope. Codex Fleet gives you code plus an independent, adversarial gate: the reviewer trusts only the diff, re-runs the tests itself, and rejects scope creep — and the SHA-keyed merge guard blocks any `codex/*` branch from merging through Claude's tools until that gate has recorded an `approve` for the branch's exact tip. Work that fails verification is parked on its branch, not silently merged.
+**…just telling Codex to do it?** A bare `codex exec` gives you code and a hope. Fleet gives you code plus an independent, adversarial gate: the reviewer trusts only the diff, re-runs the tests itself, and rejects scope creep — and the SHA-keyed merge guard blocks any `codex/*` branch from merging through Claude's tools until that gate has recorded an `approve` for the branch's exact tip. Work that fails verification is parked on its branch, not silently merged.
 
-**…[scasella/claude-dynamic-workflows-codex](https://github.com/scasella/claude-dynamic-workflows-codex)?** That project — whose app-server transport this one vendors, with attribution intact — is a general workflow-DSL runtime for running fleets of Codex workers over research, triage, and brainstorm tasks. Codex Fleet is narrower and git-native: it is a code-**delivery** pipeline. Isolated worktrees per task, mandatory independent verification, adversarial review, SHA-keyed merge gating, and stage-ladder integration that lands a clean diff in your tree. It answers a different question — not "how do I orchestrate Codex workers?" but "how do I let an LLM write code into my repo without trusting a word of it?"
+**…[scasella/claude-dynamic-workflows-codex](https://github.com/scasella/claude-dynamic-workflows-codex)?** That project — whose app-server transport this one vendors, with attribution intact — is a general workflow-DSL runtime for running fleets of Codex workers over research, triage, and brainstorm tasks. Fleet is narrower and git-native: it is a code-**delivery** pipeline. Isolated worktrees per task, mandatory independent verification, adversarial review, SHA-keyed merge gating, and stage-ladder integration that lands a clean diff in your tree. It answers a different question — not "how do I orchestrate Codex workers?" but "how do I let an LLM write code into my repo without trusting a word of it?"
 
 Nobody else in this niche treats the model's output as an untrusted supply chain. That is the whole point.
 
@@ -29,8 +29,8 @@ Three commands in Claude Code get you from zero to dispatching:
 
 ```text
 /plugin marketplace add wenbinio/claudeorchestratortocodex
-/plugin install codex-fleet@wenbinio
-/codex-fleet:setup
+/plugin install fleet@wenbinio
+/fleet:setup
 ```
 
 The `/plugin` commands need an **interactive** Claude Code session (or use the desktop app's Plugins browser: Code tab → **+** → Plugins — no terminal needed). If the new skills don't appear immediately after install, run `/reload-plugins` or start a fresh session.
@@ -38,19 +38,19 @@ The `/plugin` commands need an **interactive** Claude Code session (or use the d
 For everyday work, delegate one task live and steer it mid-flight:
 
 ```text
-/codex-fleet:delegate refactor the parser to use dataclasses — watch it work, steer it mid-flight
+/fleet:delegate refactor the parser to use dataclasses — watch it work, steer it mid-flight
 ```
 
 Use dispatch when you want a batch:
 
 ```text
-/codex-fleet:dispatch
+/fleet:dispatch
 ```
 
 ### Quick single-task use
 
 ```text
-/codex-fleet:solo fix the failing date parse in utils/dates.py
+/fleet:solo fix the failing date parse in utils/dates.py
 ```
 
 `solo` trades the multi-branch ladder for speed; review stays on by default.
@@ -90,11 +90,11 @@ Each Codex worker gets a transcript — prompt, command timeline with exit statu
 codex exec resume --disable plugins -c mcp_servers.node_repl.enabled=false -m <model> -c model_reasoning_effort="<effort>" <sessionId>
 ```
 
-Every fleet commit also carries `Codex-Fleet-Task:` and `Codex-Session:` trailers, so the fleet log and your git history form a traceable audit trail in both directions.
+Every fleet commit also carries `Fleet-Task:` and `Codex-Session:` trailers, so the fleet log and your git history form a traceable audit trail in both directions.
 
 ### Windows: workers that can talk but cannot run commands
 
-Bundled plugins and `[mcp_servers.node_repl]` can start `node_repl.exe`; Windows sandbox setup checks its ACL before **every command** and cannot open the running executable for writing. Such workers may still answer or generate images while commands and file writes fail with `setup refresh had errors`. Workers default to `isolation: "plugins-off"` (`--disable plugins -c mcp_servers.node_repl.enabled=false`), preserving other user config; `"ignore-user-config"` drops user config and requires an explicit model on exec (app-server falls back to plugins-off with a result note); `"none"` retains plugins and MCP settings. Isolation prevents the worker from starting these helpers, but the Codex desktop app can still hold the executable open: close the app, or explicitly choose `windowsSandbox: "unelevated"`, **a weaker sandbox** (`elevated` is also supported; unset preserves the user's setting). Setup tries plugins-off, then plugins-off + unelevated on Windows, then config-free exec if needed; it records unelevated only with `/codex-fleet:setup --allow-unelevated`. Results identify `failureReason: "sandbox_setup_failed"`, give these remedies, and skip automatic continuation/correction retries. Windows sandboxed workers also run as a different user, so git may fail with `dubious ownership`: the driver runs git, not Codex.
+Bundled plugins and `[mcp_servers.node_repl]` can start `node_repl.exe`; Windows sandbox setup checks its ACL before **every command** and cannot open the running executable for writing. Such workers may still answer or generate images while commands and file writes fail with `setup refresh had errors`. Workers default to `isolation: "plugins-off"` (`--disable plugins -c mcp_servers.node_repl.enabled=false`), preserving other user config; `"ignore-user-config"` drops user config and requires an explicit model on exec (app-server falls back to plugins-off with a result note); `"none"` retains plugins and MCP settings. Isolation prevents the worker from starting these helpers, but the Codex desktop app can still hold the executable open: close the app, or explicitly choose `windowsSandbox: "unelevated"`, **a weaker sandbox** (`elevated` is also supported; unset preserves the user's setting). Setup tries plugins-off, then plugins-off + unelevated on Windows, then config-free exec if needed; it records unelevated only with `/fleet:setup --allow-unelevated`. Results identify `failureReason: "sandbox_setup_failed"`, give these remedies, and skip automatic continuation/correction retries. Windows sandboxed workers also run as a different user, so git may fail with `dubious ownership`: the driver runs git, not Codex.
 
 ### MCP surface
 
@@ -106,11 +106,11 @@ The merge guard is an **advisory seatbelt, not a security boundary.** It gates C
 
 ## Cloud sandboxes
 
-Cloud sessions cannot run `/plugin`. To expose Codex Fleet to claude.ai/code sessions, check this exact block into `.claude/settings.json` in any repository that should have access:
+Cloud sessions cannot run `/plugin`. To expose Fleet to claude.ai/code sessions, check this exact block into `.claude/settings.json` in any repository that should have access:
 
 ```json
 {
-  "enabledPlugins": { "codex-fleet@wenbinio": true },
+  "enabledPlugins": { "fleet@wenbinio": true },
   "extraKnownMarketplaces": {
     "wenbinio": {
       "source": { "source": "github", "repo": "wenbinio/claudeorchestratortocodex" }
@@ -157,7 +157,7 @@ The batch is `{repo, codexExe, backend, tasks:[{id, spec, verify?}], model?, eff
 
 ## Attribution
 
-The app-server transport and sessionful-worker layer under `vendor/dynamic-workflows-codex/` are **vendored verbatim** from [scasella/claude-dynamic-workflows-codex](https://github.com/scasella/claude-dynamic-workflows-codex) (MIT, © Stephen Casella). Their license and provenance are preserved in [`vendor/dynamic-workflows-codex/LICENSE`](vendor/dynamic-workflows-codex/LICENSE) and [`vendor/dynamic-workflows-codex/NOTICE.md`](vendor/dynamic-workflows-codex/NOTICE.md). Codex Fleet claims no authorship of those files.
+The app-server transport and sessionful-worker layer under `vendor/dynamic-workflows-codex/` are **vendored verbatim** from [scasella/claude-dynamic-workflows-codex](https://github.com/scasella/claude-dynamic-workflows-codex) (MIT, © Stephen Casella). Their license and provenance are preserved in [`vendor/dynamic-workflows-codex/LICENSE`](vendor/dynamic-workflows-codex/LICENSE) and [`vendor/dynamic-workflows-codex/NOTICE.md`](vendor/dynamic-workflows-codex/NOTICE.md). Fleet claims no authorship of those files.
 
 ## License
 

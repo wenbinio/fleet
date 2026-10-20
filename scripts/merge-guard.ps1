@@ -17,7 +17,7 @@ function Stop-Merge {
 }
 
 function Resolve-DataDirectory {
-    if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PLUGIN_DATA)) {
+    if ($null -ne $env:CLAUDE_PLUGIN_DATA -and $env:CLAUDE_PLUGIN_DATA.Length -gt 0) {
         return $env:CLAUDE_PLUGIN_DATA
     }
 
@@ -25,17 +25,18 @@ function Resolve-DataDirectory {
         return $null
     }
 
-    # Marketplace installs may qualify the data-dir id; glob before assuming
-    # the bare name. No match is an infrastructure miss, so the guard opens.
     $dataRoot = Join-Path $HOME '.claude/plugins/data'
-    $globMatches = @(
-        Get-ChildItem -LiteralPath $dataRoot -Directory -Filter '*codex-fleet*' -ErrorAction SilentlyContinue
-    )
-    if ($globMatches.Count -ge 1) {
-        return $globMatches[0].FullName
+    $preferred = Join-Path $dataRoot 'fleet-agent-toolkit'
+    if (Test-Path -LiteralPath $preferred -PathType Container) { return $preferred }
+    [string[]]$names = @(Get-ChildItem -LiteralPath $dataRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -cmatch '^fleet(-|$)' } | ForEach-Object { $_.Name })
+    [Array]::Sort($names, [StringComparer]::Ordinal)
+    foreach ($name in $names) {
+        $candidate = Join-Path $dataRoot $name
+        if (Test-Path -LiteralPath (Join-Path $candidate 'config.json') -PathType Leaf) { return $candidate }
     }
-
-    return $null
+    if ($names.Count -gt 0) { return (Join-Path $dataRoot $names[0]) }
+    return $preferred
 }
 
 function ConvertTo-StaticCommandToken {

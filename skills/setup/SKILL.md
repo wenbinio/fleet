@@ -1,16 +1,16 @@
 ---
 name: setup
-description: Use when the user asks to configure, bootstrap, repair, or re-verify codex-fleet on a machine or cloud session, or when its config.json is missing or stale.
+description: Use when the user asks to configure, bootstrap, repair, or re-verify fleet on a machine or cloud session, or when its config.json is missing or stale.
 ---
 
-# Set Up Codex Fleet
+# Set Up Fleet
 
 Discover the local Codex CLI, verify non-interactive authentication, and write machine-local plugin configuration. Do not write machine facts into the plugin repository.
 
 ## Resolve the platform and data directory
 
 1. Detect `windows` versus `posix` and use exactly that lowercase value for `platform`.
-2. Resolve `dataDir` exactly as setup and later readers do: use non-empty `${CLAUDE_PLUGIN_DATA}` verbatim; otherwise choose the lexicographically-first `~/.claude/plugins/data/*codex-fleet*/` directory containing `config.json`, then the lexicographically-first match, then `~/.claude/plugins/data/codex-fleet/`.
+2. Resolve `dataDir` exactly as setup and later readers do: use non-empty `${CLAUDE_PLUGIN_DATA}` verbatim; otherwise choose the lexicographically-first `~/.claude/plugins/data/*fleet*/` directory containing `config.json`, then the lexicographically-first match, then `~/.claude/plugins/data/fleet/`.
 3. Create that data directory if needed. The target is `<dataDir>/config.json`.
 
 ## Discover Codex
@@ -35,7 +35,7 @@ Resolve usable Node >= 18 first. When available, use the runner's smoke, passing
 "<absolute nodeExe>" "<absolute plugin root>/runner/fleet-runner.mjs" --smoke --codex-exe "<absolute codexExe>" --model "<model>" --effort "<effort>"
 ```
 
-On Windows it tries `plugins-off` first, then `plugins-off` with `windowsSandbox: "unelevated"`. If needed it tries `ignore-user-config` on exec with the pinned model and no implicit Windows sandbox override. It reports each attempt and the passing settings. **Unelevated is a weaker sandbox.** Record a passing unelevated setting only if the caller explicitly invoked `/codex-fleet:setup --allow-unelevated`; forward `--allow-unelevated` to the smoke. Without that opt-in, an unelevated success is diagnostic only. If only that attempt works, fail setup, explain the weaker sandbox and remedy, and preserve any existing config rather than silently saving it. A failed shell smoke must fail setup even when the worker can talk.
+On Windows it tries `plugins-off` first, then `plugins-off` with `windowsSandbox: "unelevated"`. If needed it tries `ignore-user-config` on exec with the pinned model and no implicit Windows sandbox override. It reports each attempt and the passing settings. **Unelevated is a weaker sandbox.** Record a passing unelevated setting only if the caller explicitly invoked `/fleet:setup --allow-unelevated`; forward `--allow-unelevated` to the smoke. Without that opt-in, an unelevated success is diagnostic only. If only that attempt works, fail setup, explain the weaker sandbox and remedy, and preserve any existing config rather than silently saving it. A failed shell smoke must fail setup even when the worker can talk.
 
 Without Node, run the same attempts manually and inspect the `--json` stream. Default attempt (substitute a fresh token and pinned model/effort):
 
@@ -97,4 +97,4 @@ Use the actual `platform` and `authMode`; encode `codexExe` as JSON `null` when 
 
 On Windows the sandboxed worker runs as a different user, so git in a worktree can fail with `dubious ownership`. The Claude driver runs git; never ask Codex to do so.
 
-If `authMode` is `none`, explain that `/codex-fleet:dispatch` will run the same worktree, verification, review, and integration pipeline in Claude-only mode. The plugin data directory's persistence in cloud sandboxes is unverified, so setup may need to be run again in each cloud session.
+If `authMode` is `none`, explain that `/fleet:dispatch` will run the same worktree, verification, review, and integration pipeline in Claude-only mode. The plugin data directory's persistence in cloud sandboxes is unverified, so setup may need to be run again in each cloud session.

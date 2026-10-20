@@ -7,9 +7,9 @@ import { classifySandboxFailure, hasSandboxSetupFailure } from "../sandbox-failu
 const DEFAULT_TIMEOUT_MS = 600_000;
 const INTERRUPT_GRACE_MS = 5_000;
 const CONTINUATION_MIN_MS = 120_000;
-const REPLAYED_TERMINAL = Symbol("codex-fleet-replayed-terminal");
+const REPLAYED_TERMINAL = Symbol("fleet-replayed-terminal");
 const DEVELOPER_INSTRUCTIONS = [
-  "You are a Codex Fleet implementation worker.",
+  "You are a Fleet implementation worker.",
   "Work only inside the assigned working directory.",
   "Do not run git commands, create commits, change branches, or modify another worktree.",
   "Implement only the requested task and summarize the changes in the final answer.",

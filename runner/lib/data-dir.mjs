@@ -1,9 +1,9 @@
 /**
- * Resolve the Codex Fleet plugin data directory with one deterministic algorithm:
+ * Resolve the Fleet plugin data directory with one deterministic algorithm:
  * use a non-empty host-provided CLAUDE_PLUGIN_DATA verbatim; otherwise scan
- * ~/.claude/plugins/data for /codex-fleet/ directories, preferring the
+ * ~/.claude/plugins/data/fleet-agent-toolkit when present, then /^fleet(-|$)/ directories, preferring the
  * lexicographically-first match containing config.json and then the
- * lexicographically-first match; otherwise use the bare codex-fleet directory.
+ * lexicographically-first match; otherwise use fleet-agent-toolkit.
  */
 
 import { constants as fsConstants, promises as fsp } from "node:fs";
@@ -27,10 +27,12 @@ export async function resolveDataDir({ env = process.env, home } = {}) {
   }
 
   const parent = path.join(home ?? os.homedir(), ".claude", "plugins", "data");
+  const preferred = path.join(parent, "fleet-agent-toolkit");
+  try { if ((await fsp.stat(preferred)).isDirectory()) return preferred; } catch (error) { if (error.code !== "ENOENT") throw error; }
   let matches;
   try {
     matches = (await fsp.readdir(parent, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory() && /codex-fleet/.test(entry.name))
+      .filter((entry) => entry.isDirectory() && /^fleet(-|$)/.test(entry.name))
       .map((entry) => entry.name)
       .sort();
   } catch (error) {
@@ -43,5 +45,5 @@ export async function resolveDataDir({ env = process.env, home } = {}) {
     if (await containsConfig(directory)) return directory;
   }
 
-  return path.join(parent, matches[0] ?? "codex-fleet");
+  return path.join(parent, matches[0] ?? "fleet-agent-toolkit");
 }

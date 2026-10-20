@@ -65,12 +65,12 @@ function rpcClient(child) {
 }
 
 test("MCP server lists runs and queues only non-terminal delegate steering", { timeout: 20_000 }, async (t) => {
-  const dataDir = await mkdtemp(path.join(os.tmpdir(), "codex-fleet-mcp-"));
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "fleet-mcp-"));
   const runId = "run-20260721T010203004Z";
   const runDir = path.join(dataDir, "runs", runId);
   const transcriptPath = path.join(runDir, "transcripts", "example.transcript.md");
-  const activeDelegate = path.join(dataDir, "delegates", "active");
-  const doneDelegate = path.join(dataDir, "delegates", "done");
+  const activeDelegate = path.join(dataDir, "runs", "active");
+  const doneDelegate = path.join(dataDir, "runs", "done");
   await Promise.all([
     mkdir(path.dirname(transcriptPath), { recursive: true }),
     mkdir(activeDelegate, { recursive: true }),
@@ -109,13 +109,13 @@ test("MCP server lists runs and queues only non-terminal delegate steering", { t
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
 
   const listed = await rpc.request({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
-  assert.equal(listed.result.tools.length, 6);
+  assert.equal(listed.result.tools.length, 8);
 
   const runs = await rpc.request({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "fleet_runs", arguments: {} } });
   assert.equal(runs.result.isError, false);
-  assert.equal(JSON.parse(runs.result.content[0].text)[0].runId, runId);
+  assert.equal(JSON.parse(runs.result.content[0].text).find(run => run.kind === "batch").runId, runId);
 
-  const steered = await rpc.request({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "delegate_steer", arguments: { runDir: activeDelegate, text: "Please add the edge case." } } });
+  const steered = await rpc.request({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "fleet_steer", arguments: { runId: activeDelegate, text: "Please add the edge case." } } });
   assert.equal(steered.result.isError, false);
   const inboxFiles = await readdir(path.join(activeDelegate, "steer.inbox"));
   assert.equal(inboxFiles.length, 1);
@@ -124,7 +124,7 @@ test("MCP server lists runs and queues only non-terminal delegate steering", { t
   assert.equal(queued.text, "Please add the edge case.");
   assert.equal(typeof queued.at, "string");
 
-  const rejected = await rpc.request({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "delegate_steer", arguments: { runDir: doneDelegate, text: "Too late" } } });
+  const rejected = await rpc.request({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "fleet_steer", arguments: { runId: doneDelegate, text: "Too late" } } });
   assert.equal(rejected.result.isError, true);
   assert.match(rejected.result.content[0].text, /run is done/);
 

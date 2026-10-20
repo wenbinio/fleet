@@ -1,7 +1,7 @@
 {
-  "name": "codex-fleet",
-  "version": "0.6.2",
-  "description": "Claude-orchestrated Codex coding fleet with isolated worktrees, adversarial verification, worker transcripts, and staged integration.",
+  "name": "fleet",
+  "version": "0.7.0",
+  "description": "Codex, Antigravity and DeepSeek jobs with shared history, verified batches and guarded integration.",
   "author": {
     "name": "wenbinio"
   }

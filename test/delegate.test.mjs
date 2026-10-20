@@ -75,7 +75,7 @@ function waitForExit(child, stderr, timeoutMs = 10_000) {
 }
 
 test("delegate streams events, consumes steering, and reuses its warm thread", { timeout: 30_000 }, async (t) => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-fleet-delegate-"));
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "fleet-delegate-"));
   t.after(() => rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
   const repo = path.join(tempRoot, "repo");
@@ -173,7 +173,7 @@ test("delegate streams events, consumes steering, and reuses its warm thread", {
 });
 
 test("--steer rejects a completed run", async (t) => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-fleet-delegate-terminal-"));
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "fleet-delegate-terminal-"));
   t.after(() => rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
   const runDir = path.join(tempRoot, "delegate-run");

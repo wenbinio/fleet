@@ -94,7 +94,7 @@ function configureMockExecutable() {
 }
 
 test("fleet runner is hermetic, externalizes state, commits, and blocks collisions", { timeout: 90_000 }, async (t) => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-fleet-runner-"));
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "fleet-runner-"));
   t.after(() => rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
   const repo = path.join(tempRoot, "repo");
@@ -119,8 +119,8 @@ test("fleet runner is hermetic, externalizes state, commits, and blocks collisio
 
   const { codexExe, codexArgs } = configureMockExecutable();
   await git(repo, "init");
-  await git(repo, "config", "user.name", "Codex Fleet Test");
-  await git(repo, "config", "user.email", "codex-fleet-test@example.invalid");
+  await git(repo, "config", "user.name", "Fleet Test");
+  await git(repo, "config", "user.email", "fleet-test@example.invalid");
   await git(repo, "add", "--", ".");
   await git(repo, "commit", "-m", "failing fixture");
   const baseSha = (await git(repo, "rev-parse", "HEAD")).stdout.trim();
@@ -175,7 +175,7 @@ test("fleet runner is hermetic, externalizes state, commits, and blocks collisio
   const resultsPath = path.join(outDir, "results.json");
   assert.equal(await exists(resultsPath), true, "results.json should be written to the explicit outDir");
   assert.equal(isInside(repo, resultsPath), false, "run state must live outside the repository");
-  assert.equal(await exists(path.join(repo, ".codex-fleet", "results.json")), false);
+  assert.equal(await exists(path.join(repo, ".fleet", "results.json")), false);
 
   const payload = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.deepEqual(Object.keys(payload).sort(), ["approvedBranches", "complete", "outDir", "results", "runId", "worktreeBase"]);
@@ -239,7 +239,7 @@ test("fleet runner is hermetic, externalizes state, commits, and blocks collisio
 });
 
 test("fleet runner --resume skips done tasks whose branch tip matches the cached commit", { timeout: 120_000 }, async (t) => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-fleet-resume-"));
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "fleet-resume-"));
   t.after(() => rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
   const repo = path.join(tempRoot, "repo");
@@ -264,8 +264,8 @@ test("fleet runner --resume skips done tasks whose branch tip matches the cached
 
   const { codexExe, codexArgs } = configureMockExecutable();
   await git(repo, "init");
-  await git(repo, "config", "user.name", "Codex Fleet Test");
-  await git(repo, "config", "user.email", "codex-fleet-test@example.invalid");
+  await git(repo, "config", "user.name", "Fleet Test");
+  await git(repo, "config", "user.email", "fleet-test@example.invalid");
   await git(repo, "add", "--", ".");
   await git(repo, "commit", "-m", "failing fixture");
 
@@ -330,7 +330,7 @@ test("fleet runner interrupts workers and preserves a partial result", {
   skip: process.platform === "win32" ? "Windows does not deliver child.kill(SIGINT) to a Node signal handler" : false,
   timeout: 45_000,
 }, async (t) => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-fleet-interrupt-"));
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "fleet-interrupt-"));
   t.after(() => rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
   const repo = path.join(tempRoot, "repo");
@@ -339,8 +339,8 @@ test("fleet runner interrupts workers and preserves a partial result", {
   await mkdir(repo, { recursive: true });
   await writeFile(path.join(repo, "fixture.txt"), "base\n", "utf8");
   await git(repo, "init");
-  await git(repo, "config", "user.name", "Codex Fleet Test");
-  await git(repo, "config", "user.email", "codex-fleet-test@example.invalid");
+  await git(repo, "config", "user.name", "Fleet Test");
+  await git(repo, "config", "user.email", "fleet-test@example.invalid");
   await git(repo, "add", "--", ".");
   await git(repo, "commit", "-m", "interrupt fixture");
 

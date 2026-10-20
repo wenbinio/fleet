@@ -345,7 +345,7 @@ export async function createWorker({ codexExe, codexArgs, cwd, model, effort, is
     if (effort) flagArgs.push("-c", `model_reasoning_effort=${JSON.stringify(String(effort))}`);
     // Windows caps command lines near 32KB, so the prompt travels by file →
     // stdin ("codex exec -" reads instructions from stdin) instead of argv.
-    const promptFile = path.join(os.tmpdir(), `codex-fleet-prompt-${process.pid}-${randomUUID()}.txt`);
+    const promptFile = path.join(os.tmpdir(), `fleet-prompt-${process.pid}-${randomUUID()}.txt`);
 
     try {
       await fsp.writeFile(promptFile, String(prompt), "utf8");

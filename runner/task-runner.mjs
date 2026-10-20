@@ -270,7 +270,7 @@ async function snapshotWorkerDiff(worktree, baseCommit) {
   const trackedResult = await mustGit(["diff", "--name-only", "-z", baseCommit, "--"], worktree);
   const untrackedResult = await mustGit(["ls-files", "--others", "--exclude-standard", "-z", "--"], worktree);
   const paths = [...new Set([...splitNul(trackedResult.stdout), ...splitNul(untrackedResult.stdout)])].sort();
-  const snapshotDir = await fsp.mkdtemp(path.join(os.tmpdir(), "codex-fleet-diff-"));
+  const snapshotDir = await fsp.mkdtemp(path.join(os.tmpdir(), "fleet-diff-"));
   const entries = [];
 
   try {
@@ -685,8 +685,8 @@ export async function runTask({
     await requireStagedDiff(worktree, baseCommit);
 
     const trailerValueRe = /^[A-Za-z0-9._:-]{1,128}$/;
-    const commitMessageLines = [`${branch}: codex-fleet worker`];
-    if (trailerValueRe.test(taskId)) commitMessageLines.push("", `Codex-Fleet-Task: ${taskId}`);
+    const commitMessageLines = [`${branch}: fleet worker`];
+    if (trailerValueRe.test(taskId)) commitMessageLines.push("", `Fleet-Task: ${taskId}`);
     if (trailerValueRe.test(report.sessionId)) commitMessageLines.push(`Codex-Session: ${report.sessionId}`);
     await mustGit(["commit", "-m", commitMessageLines.join("\n")], worktree);
     const commitSha = (await mustGit(["rev-parse", "--verify", `refs/heads/${branch}^{commit}`], worktree)).out;

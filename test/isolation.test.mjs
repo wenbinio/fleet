@@ -21,7 +21,7 @@ const DEFAULT_FLAGS = ["--disable", "plugins", "-c", "mcp_servers.node_repl.enab
 const execFileAsync = promisify(execFile);
 
 async function temp(t) {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), "codex-fleet-isolation-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "fleet-isolation-"));
   t.after(() => rm(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   return cwd;
 }

@@ -1,5 +1,5 @@
 {
-  "name": "codex-fleet",
+  "name": "fleet",
   "private": true,
   "type": "module",
   "engines": {

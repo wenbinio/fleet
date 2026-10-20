@@ -1,16 +1,16 @@
 ---
 name: dispatch
-description: Use when the user asks Claude to delegate coding tasks to Codex CLI, dispatch a Codex fleet, run parallel GPT worker implementation, or integrate the results of a codex-fleet run.
+description: Use when the user asks Claude to delegate coding tasks to Codex CLI, dispatch a Codex fleet, run parallel GPT worker implementation, or integrate the results of a fleet run.
 ---
 
-# Dispatch Codex Fleet
+# Dispatch Fleet
 
 Plan the work, run the bundled fleet workflow, record its verdicts, and integrate only approved branches.
 
 ## Load configuration and inputs
 
-1. Resolve `dataDir` exactly as setup and later readers do: use non-empty `${CLAUDE_PLUGIN_DATA}` verbatim; otherwise choose the lexicographically-first `~/.claude/plugins/data/*codex-fleet*/` directory containing `config.json`, then the lexicographically-first match, then `~/.claude/plugins/data/codex-fleet/`.
-2. Read `config.json` from that directory. If it is missing, stop and run `/codex-fleet:setup` first, then re-read it. Do not guess a Codex path or authentication mode. If the recorded `codexExe` no longer exists on disk (hash-versioned paths go stale on app updates), re-run setup discovery before dispatching. Pass `model`, `effort`, `isolation`, and optional `windowsSandbox` from config.json into the batch and driver prompts. Validate `isolation` as `plugins-off` (default when absent), `ignore-user-config`, or `none`, and `windowsSandbox` as `elevated` or `unelevated` when present. Unknown values are errors. `ignore-user-config` requires an explicit model; on app-server it falls back to plugins-off with a result note. Unelevated is a weaker sandbox; propagate it only when explicitly selected, never enable it silently.
+1. Resolve `dataDir` exactly as setup and later readers do: use non-empty `${CLAUDE_PLUGIN_DATA}` verbatim; otherwise choose the lexicographically-first `~/.claude/plugins/data/*fleet*/` directory containing `config.json`, then the lexicographically-first match, then `~/.claude/plugins/data/fleet/`.
+2. Read `config.json` from that directory. If it is missing, stop and run `/fleet:setup` first, then re-read it. Do not guess a Codex path or authentication mode. If the recorded `codexExe` no longer exists on disk (hash-versioned paths go stale on app updates), re-run setup discovery before dispatching. Pass `model`, `effort`, `isolation`, and optional `windowsSandbox` from config.json into the batch and driver prompts. Validate `isolation` as `plugins-off` (default when absent), `ignore-user-config`, or `none`, and `windowsSandbox` as `elevated` or `unelevated` when present. Unknown values are errors. `ignore-user-config` requires an explicit model; on app-server it falls back to plugins-off with a result note. Unelevated is a weaker sandbox; propagate it only when explicitly selected, never enable it silently.
 3. Require `repo` to name a git repository with at least one commit. Resolve `verify` to the full-project verification command and `tasks` to objects shaped like `{id, spec, verify?}`.
 4. Set `mode` from `authMode`: use `claude` when it is `none`, and `codex` for `subscription` or `api_key`. Pass through `codexExe` and `platform`. The workflow, not this skill, owns the Claude-only fallback pipeline.
 5. Accept `integrate: stage | commit | manual`; default to `stage`.
@@ -53,8 +53,8 @@ The canonical result remains `{results: [{taskId, driver, review}], approvedBran
 
 When the runner cannot be used because no valid absolute `nodeExe` is available, or when `mode === 'claude'`, do not abandon the run and do not fall back to bare shell calls. Orchestrate the identical pipeline with parallel Agent-tool subagents:
 
-1. For each task, spawn one driver subagent (agentType `codex-fleet:codex-driver`; on resolution failure, a general-purpose agent with the same prompt). Its prompt carries the full driver lifecycle: isolated worktree on `codex/<id>` (existing branch = error, never silent delete), foreground Codex dispatch with `--disable plugins -c mcp_servers.node_repl.enabled=false --json`, closed stdin, model/effort pinned, configured isolation and Windows override, 10-minute window + one resume continuation, verify, one correction round, artifact purge, commit, audit, structured report.
-2. As each driver finishes, spawn its reviewer subagent (agentType `codex-fleet:fleet-reviewer`) with the adversarial review duties including the mandatory independent verify re-run.
+1. For each task, spawn one driver subagent (agentType `fleet:codex-driver`; on resolution failure, a general-purpose agent with the same prompt). Its prompt carries the full driver lifecycle: isolated worktree on `codex/<id>` (existing branch = error, never silent delete), foreground Codex dispatch with `--disable plugins -c mcp_servers.node_repl.enabled=false --json`, closed stdin, model/effort pinned, configured isolation and Windows override, 10-minute window + one resume continuation, verify, one correction round, artifact purge, commit, audit, structured report.
+2. As each driver finishes, spawn its reviewer subagent (agentType `fleet:fleet-reviewer`) with the adversarial review duties including the mandatory independent verify re-run.
 3. Assemble `{results, approvedBranches, worktreeBase}` yourself applying the same approval rule (approve verdict + green verify; unverified excluded unless opted in).
 
 The runner-first lifecycle is the canonical pipeline contract. The Agent-tool fallback MUST produce the same branch layout, verdict semantics, and report shape; `docs/reference/v2-workflow-engine.js` is reference-only.
@@ -65,7 +65,7 @@ Every Codex invocation, including fleet workers, one-off auditors, and ad-hoc on
 
 ```javascript
 agent({
-  agentType: 'codex-fleet:codex-driver',
+  agentType: 'fleet:codex-driver',
   prompt: `ONE-OFF CODEX JOB
 Repository: <repo>
 Task: <grounded task>

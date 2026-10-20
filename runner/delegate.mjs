@@ -23,7 +23,7 @@ const USAGE = [
   "       delegate.mjs --interrupt <runDir>",
 ].join("\n");
 const DEVELOPER_INSTRUCTIONS = [
-  "You are a Codex Fleet implementation worker.",
+  "You are a Fleet implementation worker.",
   "Work only inside the assigned working directory.",
   "Do not run git commands, create commits, change branches, or modify another worktree.",
   "Implement only the requested task and summarize the changes in the final answer.",

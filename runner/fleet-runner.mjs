@@ -871,13 +871,13 @@ export async function probe(args) {
   const token = `FLEET_SHELL_${randomUUID().replaceAll("-", "")}`;
 
   try {
-    probeDir = args.cwd ? path.resolve(args.cwd) : await fsp.mkdtemp(path.join(os.tmpdir(), "codex-fleet-probe-"));
+    probeDir = args.cwd ? path.resolve(args.cwd) : await fsp.mkdtemp(path.join(os.tmpdir(), "fleet-probe-"));
     const { AppServerClient } = await import("../vendor/dynamic-workflows-codex/src/appServerClient.js");
     client = new AppServerClient({
       command: codexExe,
       args: appServerArgs(args),
       cwd: probeDir,
-      clientInfo: { name: "codex-fleet-probe", title: "Codex Fleet Probe", version: "0.6.2" },
+      clientInfo: { name: "fleet-probe", title: "Fleet Probe", version: "0.6.2" },
       capabilities: { experimentalApi: true },
       requestHandler: probeRequestHandler,
     });

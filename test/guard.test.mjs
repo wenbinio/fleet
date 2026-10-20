@@ -30,8 +30,8 @@ async function git(cwd, ...args) {
 async function initializeRepo(repo) {
   await mkdir(repo, { recursive: true });
   await git(repo, "init");
-  await git(repo, "config", "user.name", "Codex Fleet Guard Test");
-  await git(repo, "config", "user.email", "codex-fleet-guard@example.invalid");
+  await git(repo, "config", "user.name", "Fleet Guard Test");
+  await git(repo, "config", "user.email", "fleet-guard@example.invalid");
   await writeFile(path.join(repo, "base.txt"), "base\n", "utf8");
   await git(repo, "add", "--", ".");
   await git(repo, "commit", "-m", "base");
@@ -92,7 +92,7 @@ test(
   "PowerShell merge guard verdict matrix",
   { skip: process.platform === "win32" ? false : "merge-guard.ps1 matrix runs only on Windows", timeout: 90_000 },
   async (t) => {
-    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-fleet-guard-"));
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "fleet-guard-"));
     t.after(() => rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
     const repo = path.join(tempRoot, "repo");

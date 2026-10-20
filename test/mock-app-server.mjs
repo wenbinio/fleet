@@ -102,7 +102,7 @@ async function handle(frame) {
 
   if (method === "initialize") {
     respond(id, {
-      userAgent: "codex-fleet-mock/1.0.0",
+      userAgent: "fleet-mock/1.0.0",
       codexHome: null,
       platformFamily: process.platform === "win32" ? "windows" : "unix",
       platformOs: process.platform,

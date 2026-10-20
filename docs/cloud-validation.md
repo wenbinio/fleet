@@ -7,7 +7,7 @@ One-time scripted run (~15 min) in a real claude.ai/code cloud session, on a rep
 - Target repo has this exact block committed in `.claude/settings.json` (see README "Cloud sandboxes"):
   ```json
   {
-    "enabledPlugins": { "codex-fleet@wenbinio": true },
+    "enabledPlugins": { "fleet@wenbinio": true },
     "extraKnownMarketplaces": {
       "wenbinio": {
         "source": { "source": "github", "repo": "wenbinio/claudeorchestratortocodex" }
@@ -22,12 +22,12 @@ Run the steps in order; fill the Results table as you go. Cloud sandboxes are Li
 ## 1. Plugin loads from checked-in settings
 
 1. Open a claude.ai/code cloud session on the target repo.
-2. Type `/codex-fleet:setup`. If the command is unknown / the skill does not load, the plugin did not install from `enabledPlugins` + `extraKnownMarketplaces` — record FAIL with the exact error text.
+2. Type `/fleet:setup`. If the command is unknown / the skill does not load, the plugin did not install from `enabledPlugins` + `extraKnownMarketplaces` — record FAIL with the exact error text.
 3. Record PASS if the setup skill begins executing.
 
 ## 2. Setup completes headless
 
-While `/codex-fleet:setup` runs (or run these directly if setup stalls), capture:
+While `/fleet:setup` runs (or run these directly if setup stalls), capture:
 
 1. Node present: `node --version` — need >= 18. Record version.
 2. Codex installable: `which codex || npm i -g @openai/codex && which codex`. Record whether the global npm install succeeds in the sandbox and the resulting path.
@@ -36,21 +36,21 @@ While `/codex-fleet:setup` runs (or run these directly if setup stalls), capture
    codex exec --disable plugins -c mcp_servers.node_repl.enabled=false --json --sandbox read-only --ephemeral -m gpt-5.6-sol -c 'model_reasoning_effort="xhigh"' 'Run a shell command that prints FLEET_SHELL_<random-id>, then reply with that token. Do not run git.' < /dev/null
    ```
    Record PASS only on exit 0, a successful command event (exit code 0) whose output is the token, and a matching final answer. A chat-only response fails. Close stdin with `/dev/null`; preserve the passing `isolation` in config as described in setup.
-4. Read back the written config: `cat "${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/codex-fleet}/config.json"`. Record `authMode` and `backend` (expected: `api_key`, and `app-server` if the runner probe passes, else `exec`).
+4. Read back the written config: `cat "${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/fleet}/config.json"`. Record `authMode` and `backend` (expected: `api_key`, and `app-server` if the runner probe passes, else `exec`).
 
 ## 3. Data-dir persistence across session restart
 
-1. Record the resolved data dir: `echo "$CLAUDE_PLUGIN_DATA"`; if empty, `ls -d ~/.claude/plugins/data/*codex-fleet*`.
+1. Record the resolved data dir: `echo "$CLAUDE_PLUGIN_DATA"`; if empty, `ls -d ~/.claude/plugins/data/*fleet*`.
 2. Confirm `config.json` exists there: `ls -l "<dataDir>/config.json"`.
 3. Write a sentinel: `date -u +%FT%TZ > "<dataDir>/persist-probe.txt"`.
 4. End the session. Start a NEW cloud session on the same repo.
 5. In the new session: `cat "<dataDir>/persist-probe.txt"` (re-resolve the dir as in step 1 — the path itself may change).
-6. Record: exact path, and persistence yes/no. If no, confirm the README caveat ("re-run setup per session") by running `/codex-fleet:setup` again and noting it completes.
+6. Record: exact path, and persistence yes/no. If no, confirm the README caveat ("re-run setup per session") by running `/fleet:setup` again and noting it completes.
 
 ## 4. Tiny run end-to-end
 
 1. Pick a trivial, verifiable change in the repo (e.g. fix a typo in a comment).
-2. Run `/codex-fleet:solo <the trivial task>` (or `/codex-fleet:delegate` if you want the interactive surface instead — one of the two is sufficient).
+2. Run `/fleet:solo <the trivial task>` (or `/fleet:delegate` if you want the interactive surface instead — one of the two is sufficient).
 3. Record: did the worker start, produce a diff, pass verification, and integrate? Paste the final run summary line. If it fell back to Claude-only mode, record why (from setup's `authMode`).
 
 ## 5. Merge guard fires in cloud (spec claim A7.11)
@@ -63,7 +63,7 @@ Seed a guaranteed-block state, then have Claude attempt the merge through its sh
 4. Seed a stale verdict into the store (recorded SHA is well-formed but will not match the branch tip → block-on-stale path):
    ```sh
    REPO_KEY=$(cd "$(git rev-parse --git-common-dir)" && pwd -P)
-   DATA_DIR=${CLAUDE_PLUGIN_DATA:-$(ls -d ~/.claude/plugins/data/*codex-fleet* | head -1)}
+   DATA_DIR=${CLAUDE_PLUGIN_DATA:-$(ls -d ~/.claude/plugins/data/*fleet* | head -1)}
    jq -n --arg repo "$REPO_KEY" \
      '{($repo): {"codex/guardtest": {"sha": "0000000000000000000000000000000000000000", "verdict": "approve"}}}' \
      > "$DATA_DIR/approved.json"
@@ -104,4 +104,4 @@ Paste the filled Results table (plus any Failure notes) back into this file unde
 Once all rows are green, update:
 
 - **README.md** — "Cloud sandboxes" section: drop the "cloud guard behavior is on the untested-at-release list" hedge (currently line ~112) and resolve the data-dir "may require rerunning `setup` per session" caveat per row 3's outcome; "Limitations & release status": remove "the cloud sandbox surface (including cloud merge-guard behavior)" from the untested-at-release bullet (currently line ~122).
-- **docs/specs/2026-07-18-codex-fleet-plugin-design.md** (owned by spec agent — file an update, do not edit blind): A6 cloud note on data-dir persistence (currently line ~206) and the A6 "Honest untested-at-release list" (line ~207); A7.11's "cloud guard behavior joins the honest untested-at-release list (unverifiable from this machine)" clause (line ~221).
+- **docs/specs/2026-07-18-fleet-plugin-design.md** (owned by spec agent — file an update, do not edit blind): A6 cloud note on data-dir persistence (currently line ~206) and the A6 "Honest untested-at-release list" (line ~207); A7.11's "cloud guard behavior joins the honest untested-at-release list (unverifiable from this machine)" clause (line ~221).

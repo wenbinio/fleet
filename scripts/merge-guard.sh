@@ -23,16 +23,21 @@ resolve_data_dir() {
     fi
 
     [ -n "${HOME:-}" ] || return 1
-    # Marketplace installs may qualify the data-dir id. No match is an
-    # infrastructure miss, so the advisory guard opens.
-    for candidate in "$HOME"/.claude/plugins/data/*codex-fleet*/; do
+    preferred="$HOME/.claude/plugins/data/fleet-agent-toolkit"
+    if [ -d "$preferred" ]; then printf '%s\n' "$preferred"; return 0; fi
+    first=''
+    # C ordering matches the JavaScript and PowerShell ordinal ordering.
+    LC_ALL=C
+    export LC_ALL
+    for candidate in "$HOME"/.claude/plugins/data/fleet/ "$HOME"/.claude/plugins/data/fleet-*/; do
         if [ -d "$candidate" ]; then
+            [ -n "$first" ] || first=${candidate%/}
+            if [ ! -f "$candidate/config.json" ]; then continue; fi
             printf '%s\n' "${candidate%/}"
             return 0
         fi
     done
-
-    return 1
+    printf '%s\n' "${first:-$preferred}"
 }
 
 command -v jq >/dev/null 2>&1 || exit 0

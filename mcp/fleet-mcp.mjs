@@ -4,6 +4,10 @@ import { randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fsp } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import { pathToFileURL } from "node:url";
+import { startAsk, listRuns, runDirectory, kindOf, readAsk, answerOf, capText, eventsFile, BACKENDS } from "../runner/lib/jobs.mjs";
+import { loadToolkit } from "../runner/lib/toolkit-link.mjs";
+import { finalText } from "../runner/ask-job.mjs";
 
 import { resolveDataDir } from "../runner/lib/data-dir.mjs";
 
@@ -12,44 +16,18 @@ const TERMINAL_STATUSES = new Set(["done", "interrupted", "failed"]);
 const TRANSCRIPT_LIMIT = 40_000;
 const TRUNCATION_NOTE = "\n\n[Transcript truncated to 40000 characters.]";
 
-const TOOLS = [
-  {
-    name: "fleet_runs",
-    description: "List the 20 newest Codex Fleet runs and their task statuses.",
-    inputSchema: objectSchema({}),
-  },
-  {
-    name: "fleet_run",
-    description: "Show the distilled task results for one Codex Fleet run.",
-    inputSchema: objectSchema({ runId: stringSchema("Run directory name under the plugin data directory.") }, ["runId"]),
-  },
-  {
-    name: "fleet_transcript",
-    description: "Read one task transcript from a Codex Fleet run.",
-    inputSchema: objectSchema({
-      runId: stringSchema("Run directory name under the plugin data directory."),
-      taskId: stringSchema("Task identifier in the run results."),
-    }, ["runId", "taskId"]),
-  },
-  {
-    name: "delegate_status",
-    description: "Show a delegate run state and its last 10 event beats.",
-    inputSchema: objectSchema({ runDir: stringSchema("Delegate run directory inside the plugin data directory.") }, ["runDir"]),
-  },
-  {
-    name: "delegate_steer",
-    description: "Queue a durable steering message for an active delegate run.",
-    inputSchema: objectSchema({
-      runDir: stringSchema("Delegate run directory inside the plugin data directory."),
-      text: stringSchema("Non-empty steering message."),
-    }, ["runDir", "text"]),
-  },
-  {
-    name: "delegate_interrupt",
-    description: "Request interruption of a delegate run.",
-    inputSchema: objectSchema({ runDir: stringSchema("Delegate run directory inside the plugin data directory.") }, ["runDir"]),
-  },
-];
+const str = { type: "string" };
+const runSchema = objectSchema({ runId: str }, ["runId"]);
+export const TOOLS = [
+  { name: "fleet_ask", description: "Start a Codex, agy or DeepSeek job and return its wait command.", inputSchema: objectSchema({ backend: { enum: BACKENDS }, prompt: str, promptFile: str, cwd: str, model: str, effort: { enum: ["low", "medium", "high", "xhigh"] }, readOnly: { type: "boolean" }, addDirs: { type: "array", items: str }, jsonSchema: str, resume: str }, ["backend"]) },
+  { name: "fleet_runs", description: "List recent jobs, batches and delegates.", inputSchema: objectSchema({ limit: { type: "integer", minimum: 1, default: 20 }, backend: { enum: BACKENDS } }) },
+  { name: "fleet_run", description: "Read one run's results and answer.", inputSchema: runSchema },
+  { name: "fleet_transcript", description: "Read a run or batch task transcript.", inputSchema: objectSchema({ runId: str, taskId: str }, ["runId"]) },
+  { name: "fleet_status", description: "Show a live run's status and recent event beats.", inputSchema: runSchema },
+  { name: "fleet_steer", description: "Queue a steering message for a delegate.", inputSchema: objectSchema({ runId: str, text: str }, ["runId", "text"]) },
+  { name: "fleet_interrupt", description: "Request interruption of a job or delegate.", inputSchema: runSchema },
+  { name: "fleet_accounts", description: "Check backend sign-in status without logging in.", inputSchema: objectSchema({}) },
+].map(tool => ["fleet_runs", "fleet_run", "fleet_transcript", "fleet_status", "fleet_accounts"].includes(tool.name) ? { ...tool, annotations: { readOnlyHint: true } } : tool);
 
 function stringSchema(description) {
   return { type: "string", description };
@@ -85,29 +63,7 @@ function isInside(parent, candidate) {
   return relation === "" || (relation !== ".." && !relation.startsWith(`..${path.sep}`) && !path.isAbsolute(relation));
 }
 
-function runDirectory(dataDir, runId) {
-  requireString(runId, "runId");
-  if (runId !== path.basename(runId) || runId === "." || runId === "..") {
-    throw new Error("runId must be a run directory name");
-  }
-  return path.join(dataDir, "runs", runId);
-}
-
-async function delegateDirectory(dataDir, runDir) {
-  requireString(runDir, "runDir");
-  const candidate = path.resolve(path.isAbsolute(runDir) ? runDir : path.join(dataDir, runDir));
-  if (!isInside(dataDir, candidate)) throw new Error("runDir must be inside the plugin data directory");
-  let resolved;
-  try {
-    resolved = await fsp.realpath(candidate);
-  } catch (error) {
-    if (error?.code === "ENOENT") throw new Error(`delegate run not found: ${candidate}`);
-    throw error;
-  }
-  const resolvedDataDir = await fsp.realpath(dataDir).catch(() => path.resolve(dataDir));
-  if (!isInside(resolvedDataDir, resolved)) throw new Error("runDir must be inside the plugin data directory");
-  return resolved;
-}
+async function delegateDirectory(dataDir, runId) { return runDirectory(dataDir, runId); }
 
 async function readJson(filePath, label = filePath) {
   let contents;
@@ -159,39 +115,6 @@ function reviewVerdict(review) {
   return review.verdict ?? review.reviewVerdict;
 }
 
-async function fleetRuns(dataDir) {
-  const runsDir = path.join(dataDir, "runs");
-  let entries;
-  try {
-    entries = (await fsp.readdir(runsDir, { withFileTypes: true })).filter((entry) => entry.isDirectory());
-  } catch (error) {
-    if (error?.code === "ENOENT") return [];
-    throw error;
-  }
-
-  const dated = await Promise.all(entries.map(async (entry) => {
-    const directory = path.join(runsDir, entry.name);
-    const stats = await fsp.stat(directory).catch(() => null);
-    return { name: entry.name, mtimeMs: stats?.mtimeMs ?? 0 };
-  }));
-  dated.sort((left, right) => right.mtimeMs - left.mtimeMs || right.name.localeCompare(left.name));
-
-  return Promise.all(dated.slice(0, 20).map(async ({ name }) => {
-    let payload = {};
-    try {
-      payload = JSON.parse(await fsp.readFile(path.join(runsDir, name, "results.json"), "utf8"));
-    } catch {
-      // A run directory may exist before its first complete results snapshot.
-    }
-    const reports = reportsFrom(payload);
-    return {
-      runId: name,
-      complete: payload?.complete === true,
-      taskCount: reports.length,
-      statuses: reports.map((report) => driverFrom(report).status ?? "unknown"),
-    };
-  }));
-}
 
 async function fleetRun(dataDir, runId) {
   const directory = runDirectory(dataDir, runId);
@@ -221,7 +144,9 @@ async function fleetTranscript(dataDir, runId, taskId) {
   const recorded = driverFrom(report).transcriptPath;
   const transcriptPath = path.resolve(recorded || path.join(directory, "transcripts", `${taskId}.transcript.md`));
   if (!isInside(dataDir, transcriptPath)) throw new Error("transcriptPath is outside the plugin data directory");
-  const text = await fsp.readFile(transcriptPath, "utf8").catch((error) => {
+  const realPath = await fsp.realpath(transcriptPath);
+  if (!isInside(await fsp.realpath(dataDir), realPath)) throw new Error("transcriptPath is outside the plugin data directory");
+  const text = await fsp.readFile(realPath, "utf8").catch((error) => {
     throw new Error(`cannot read transcript: ${error?.message ?? String(error)}`);
   });
   if (text.length <= TRANSCRIPT_LIMIT) return text;
@@ -233,7 +158,15 @@ function oneLine(value, limit = 500) {
   return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
 }
 
-function eventBeat(event) {
+export function eventBeat(event) {
+  if (event?.item) event = { ...event.item, at: event.at };
+  if (event?.type === "agent_message") event = { ...event, type: "agentMessage" };
+  if (event?.type === "command_execution") event = { ...event, type: "commandExecution", exitCode: event.exit_code };
+  if (event?.type === "file_change") event = { ...event, type: "fileChange" };
+  if (event?.type === "reasoning" || event?.type === "reasoningSummary") return `reasoning: ${oneLine(event.text ?? event.summary)}`;
+  if (event?.type === "final" || event?.event === "final") return `agent: ${oneLine(finalText(event))}`;
+  if (event?.type === "tool_call") return `tool: ${oneLine(event.name ?? event.tool ?? event.function?.name)} ${oneLine(event.arguments ?? event.input ?? event.function?.arguments)}`;
+  if (event?.type === "tool_result") return `tool result: ${oneLine(event.output ?? event.result ?? event.content)}${event.exit_code == null ? "" : ` (exit ${event.exit_code})`}`;
   if (!isObject(event)) return oneLine(event);
   const prefix = event.at ? `${event.at} ` : "";
   if (event.type === "agentMessage") return `${prefix}agent: ${oneLine(event.text)}`.trim();
@@ -263,19 +196,7 @@ function eventBeat(event) {
 async function delegateStatus(dataDir, runDir) {
   const directory = await delegateDirectory(dataDir, runDir);
   const state = await readJson(path.join(directory, "state.json"), "delegate state");
-  let lines = [];
-  try {
-    lines = (await fsp.readFile(path.join(directory, "events.jsonl"), "utf8")).split(/\r?\n/).filter(Boolean).slice(-10);
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
-  const beats = lines.map((line) => {
-    try {
-      return eventBeat(JSON.parse(line));
-    } catch {
-      return `invalid event: ${oneLine(line)}`;
-    }
-  });
+  const beats = await eventBeats(path.join(directory, "events.jsonl"), 10);
   return { state, beats };
 }
 
@@ -301,30 +222,69 @@ async function delegateInterrupt(dataDir, runDir) {
   return { ok: true, action: "interrupt", runDir: directory, at };
 }
 
-async function callTool(name, rawArguments) {
+async function readTail(file, bytes = 256 * 1024, completeLines = false) {
+  let handle;
+  try {
+    handle = await fsp.open(file, "r");
+    const { size } = await handle.stat();
+    const offset = Math.max(0, size - bytes), buffer = Buffer.alloc(Math.min(size, bytes));
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+    let text = buffer.subarray(0, bytesRead).toString("utf8");
+    if (offset && completeLines) text = text.slice(text.indexOf("\n") + 1);
+    return text;
+  } catch (error) { if (error.code === "ENOENT") return ""; throw error; }
+  finally { await handle?.close(); }
+}
+async function eventBeats(file, last) {
+  if (!file) return [];
+  const text = last ? await readTail(file, 256 * 1024, true) : await fsp.readFile(file, "utf8").catch(error => { if (error.code === "ENOENT") return ""; throw error; });
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  return (last ? lines.slice(-last) : lines).map(line => { try { return eventBeat(JSON.parse(line)); } catch { return `invalid event: ${oneLine(line)}`; } });
+}
+
+export async function callTool(name, rawArguments, { env = process.env, dataDir, start = startAsk } = {}) {
   const args = rawArguments === undefined ? {} : requireObject(rawArguments, "arguments");
-  const dataDir = await resolveDataDir();
-  switch (name) {
-    case "fleet_runs":
-      requireOnlyKeys(args, []);
-      return { value: await fleetRuns(dataDir), json: true };
-    case "fleet_run":
-      requireOnlyKeys(args, ["runId"]);
-      return { value: await fleetRun(dataDir, requireString(args.runId, "runId")), json: true };
-    case "fleet_transcript":
-      requireOnlyKeys(args, ["runId", "taskId"]);
-      return { value: await fleetTranscript(dataDir, requireString(args.runId, "runId"), requireString(args.taskId, "taskId")), json: false };
-    case "delegate_status":
-      requireOnlyKeys(args, ["runDir"]);
-      return { value: await delegateStatus(dataDir, requireString(args.runDir, "runDir")), json: true };
-    case "delegate_steer":
-      requireOnlyKeys(args, ["runDir", "text"]);
-      return { value: await delegateSteer(dataDir, requireString(args.runDir, "runDir"), requireString(args.text, "text")), json: true };
-    case "delegate_interrupt":
-      requireOnlyKeys(args, ["runDir"]);
-      return { value: await delegateInterrupt(dataDir, requireString(args.runDir, "runDir")), json: true };
-    default:
-      throw new Error(`unknown tool: ${name}`);
+  dataDir ??= await resolveDataDir({ env });
+  const tool = TOOLS.find(tool => tool.name === name);
+  if (!tool) throw new Error(`unknown tool: ${name}`);
+  requireOnlyKeys(args, Object.keys(tool.inputSchema.properties));
+  if (name === "fleet_ask") return { value: await start(args, { env, dataDir }), json: true };
+  if (name === "fleet_accounts") {
+    const { toolkit } = await loadToolkit({ env });
+    const value = await Promise.all(["codex", "agy", "dsh"].map(name => toolkit.signInStatus(name, { env })));
+    return { value, json: true };
+  }
+  if (name === "fleet_runs") return { value: await listRuns(dataDir, args), json: true };
+  const directory = runDirectory(dataDir, requireString(args.runId, "runId"));
+  const kind = kindOf(directory);
+  if (name === "fleet_steer") {
+    if (kind !== "delegate") throw new Error("steering is for delegates; use fleet_ask with resume");
+    return { value: await delegateSteer(dataDir, directory, args.text), json: true };
+  }
+  if (name === "fleet_interrupt") {
+    if (kind === "delegate") return { value: await delegateInterrupt(dataDir, directory), json: true };
+    if (kind !== "ask") throw new Error("interrupt is for ask and delegate runs");
+    await atomicWriteJson(path.join(directory, "interrupt.flag"), { at: new Date().toISOString() });
+    return { value: { ok: true, action: "interrupt", runId: path.basename(directory) }, json: true };
+  }
+  if (name === "fleet_run") {
+    const value = kind === "ask" ? { ...readAsk(directory), answer: answerOf(directory) } : kind === "delegate" ? await delegateStatus(dataDir, directory) : await fleetRun(dataDir, directory);
+    return { value, json: true };
+  }
+  if (name === "fleet_status") {
+    if (kind === "delegate") return { value: await delegateStatus(dataDir, directory), json: true };
+    if (kind !== "ask") throw new Error("status is for ask and delegate runs; use fleet_run for batches");
+    const run = readAsk(directory);
+    const tail = run.backend === "agy" ? await readTail(path.join(directory, "answer.txt"), 2000) : "";
+    const beats = run.backend === "agy" ? (tail ? [oneLine(tail)] : []) : await eventBeats(await eventsFile(directory, run, { env }), 10);
+    return { value: { runId: run.runId, backend: run.backend, model: run.model, status: run.status, elapsedSeconds: Math.max(0, Math.floor((Date.parse(run.endedAt ?? new Date().toISOString()) - Date.parse(run.startedAt)) / 1000)), beats: beats.slice(-10) }, json: true };
+  }
+  if (name === "fleet_transcript") {
+    if (kind === "batch") return { value: await fleetTranscript(dataDir, directory, requireString(args.taskId, "taskId")), json: false };
+    if (args.taskId !== undefined) throw new Error("taskId is for batch runs only");
+    const run = kind === "ask" ? readAsk(directory) : null;
+    const text = run?.backend === "agy" ? `Prompt:\n${await fsp.readFile(path.join(directory, "prompt.txt"), "utf8")}\n\nAnswer:\n${answerOf(directory)}` : (await eventBeats(kind === "delegate" ? path.join(directory, "events.jsonl") : await eventsFile(directory, run, { env }))).join("\n");
+    return { value: capText(text), json: false };
   }
 }
 
@@ -352,7 +312,7 @@ async function handleMessage(message) {
     result(message.id, {
       protocolVersion: message.params?.protocolVersion ?? DEFAULT_PROTOCOL_VERSION,
       capabilities: { tools: {} },
-      serverInfo: { name: "codex-fleet", version: "0.6.2" },
+      serverInfo: { name: "fleet", version: "0.7.0" },
     });
     return;
   }
@@ -378,6 +338,7 @@ async function handleMessage(message) {
   rpcError(message.id, -32601, "Method not found");
 }
 
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
 const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 for await (const line of input) {
   if (!line.trim()) continue;
@@ -393,4 +354,6 @@ for await (const line of input) {
   } catch (error) {
     rpcError(isObject(message) && Object.hasOwn(message, "id") ? message.id : null, -32603, error?.message ?? "Internal error");
   }
+}
+
 }
