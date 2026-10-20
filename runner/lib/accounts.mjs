@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { loadToolkit } from "./runtime.mjs";
 import { atomicJson, listRuns } from "./jobs.mjs";
 import { BACKENDS } from "./adapters.mjs";
+import { effortNote } from "../../core/lib/effort.mjs";
 
 const TTL = 10 * 60 * 1000;
 const models = (ids, cost, access) => ids.map(id => ({ id, cost, access }));
@@ -119,6 +120,9 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
     } else {
       status = { found: soundModels().length > 0, signedIn: null, detail: "local sound tools; no login" };
     }
-    return { ...status, backend: row.backend, ...(row.provider ? { provider: row.provider } : {}), models: row.backend === "sound" ? soundModels() : row.backend === "chatgpt" ? chatModels() : row.models, notes: row.notes };
+    // Derive effort notes after cache lookup so a cached catalog never freezes
+    // backend option rules from an earlier release.
+    const note = effortNote(row.backend), notes = [...row.notes.filter(note => !note.startsWith("effort:")), ...(note ? [note] : [])];
+    return { ...status, backend: row.backend, ...(row.provider ? { provider: row.provider } : {}), models: row.backend === "sound" ? soundModels() : row.backend === "chatgpt" ? chatModels() : row.models, notes };
   }));
 }

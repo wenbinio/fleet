@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { capture, loadConfig, toolkitHome } from './toolkit.mjs';
+import { validateEffort } from './effort.mjs';
 
 export function defaultProvider(env = process.env) {
   return { name: 'openrouter', kind: 'openai', baseUrl: 'https://openrouter.ai/api/v1', keyFile: path.join(toolkitHome(env), 'secrets', 'openrouter.dpapi'), keyEnv: 'OPENROUTER_API_KEY' };
@@ -170,6 +171,7 @@ function dailyLimited(response, now) {
 export async function chat(service, opts, options = {}) {
   // Model authorization is checked before key introspection, catalog or inference.
   const rule = modelRules(opts.model, opts.maxCostUsd, service);
+  validateEffort('api', opts.effort);
   if (typeof opts.prompt !== 'string' || !opts.prompt.trim()) throw new Error('prompt must be non-empty');
   if (opts.system !== undefined && typeof opts.system !== 'string') throw new Error('system must be text');
   if (opts.maxTokens !== undefined && (!Number.isSafeInteger(opts.maxTokens) || opts.maxTokens < 1)) throw new Error('maxTokens must be a positive integer');
@@ -197,7 +199,7 @@ export async function chat(service, opts, options = {}) {
         if (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens === Number.MAX_SAFE_INTEGER) return outcome('failed', { error: 'maxCostUsd leaves no bounded completion budget; supply maxTokens' });
       }
     }
-    const body = { model: rule.model, messages: [...(opts.system ? [{ role: 'system', content: opts.system }] : []), { role: 'user', content: opts.prompt }], ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}) };
+    const body = { model: rule.model, messages: [...(opts.system ? [{ role: 'system', content: opts.system }] : []), { role: 'user', content: opts.prompt }], ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}), ...(opts.effort !== undefined ? { reasoning: { effort: opts.effort } } : {}) };
     let response;
     for (let attempt = 0; attempt <= 3; attempt++) {
       response = await request(service, '/chat/completions', { ...options, key, method: 'POST', body });

@@ -14,6 +14,7 @@ import { runAskJob, backendCommand } from "../runner/ask-job.mjs";
 import { toolkitRepo, injectRuntime, CORE_ROOT } from "../runner/lib/runtime.mjs";
 import { callTool, TOOLS, eventBeat } from "../mcp/fleet-mcp.mjs";
 import { cli } from "../runner/fleet.mjs";
+import { EFFORT_RULES, EFFORT_DESCRIPTION, effortNote } from "../core/lib/effort.mjs";
 
 const grokModelsOutput = "You are not authenticated.\n\nDefault model: grok-4.7\n\nAvailable models:\n  * grok-4.7 (default)\n  - grok-4.7-build-fast\n  - grok-4.6\n  - grok-4.5";
 const grokModelIds = ["grok-4.7", "grok-4.7-build-fast", "grok-4.6", "grok-4.5"];
@@ -92,10 +93,64 @@ test("fleet runtime is self-contained and explicit fake injection is isolated", 
 test("ask validates backend options, prompt exclusivity and absolute directories", t => {
   const f = fixture(t), valid = { backend: "codex", prompt: "hello", cwd: f.root };
   for (const changes of [{ backend: "other" }, { promptFile: path.join(f.root, "missing") }, { prompt: undefined }, { cwd: "." }, { effort: "max" }, { readOnly: "yes" }, { addDirs: "dir" }, { jsonSchema: "{}" }, { unknown: true }]) assert.throws(() => validateAsk({ ...valid, ...changes }, { env: f.env }));
-  for (const key of ["effort", "readOnly", "resume"]) assert.throws(() => validateAsk({ backend: "agy", prompt: "hello", [key]: "x" }, { env: f.env }), /codex(?: or grok)?(?: or image)? only/);
+  for (const key of ["effort", "readOnly", "resume"]) assert.throws(() => validateAsk({ backend: "agy", prompt: "hello", [key]: "x" }, { env: f.env }), /only/);
   assert.throws(() => validateAsk({ backend: "deepseek", prompt: "hello", cwd: f.root, model: "other" }, { env: f.env }), /invalid deepseek model/);
   assert.throws(() => validateAsk({ backend: "deepseek", prompt: "hello", cwd: f.root, addDirs: [] }, { env: f.env }), /codex or agy only/);
   assert.doesNotThrow(() => validateAsk({ backend: "agy", prompt: "hello", jsonSchema: "{}" }, { env: f.env }));
+});
+test("effort validation and the MCP string schema share backend rules", async t => {
+  const f = fixture(t);
+  const expected = {
+    codex: ["low", "medium", "high", "xhigh"], image: ["low", "medium", "high", "xhigh"],
+    grok: ["low", "medium", "high", "xhigh", "future effort"], api: ["low", "medium", "high"], advisor: ["low", "medium", "high"],
+  };
+  assert.deepEqual(new Set(Object.keys(EFFORT_RULES)), new Set(Object.keys(expected)));
+  for (const [backend, values] of Object.entries(expected)) {
+    const opts = { backend, prompt: "hello", ...(backend === "codex" ? { cwd: f.root } : {}), ...(backend === "advisor" ? { lokAsked: true } : {}) };
+    for (const effort of values) assert.doesNotThrow(() => validateAsk({ ...opts, effort }, { env: f.env }));
+    for (const effort of ["", "  ", null, 0, true]) assert.throws(() => validateAsk({ ...opts, effort }, { env: f.env }), /effort/);
+    if (backend !== "grok") assert.throws(() => validateAsk({ ...opts, effort: "future effort" }, { env: f.env }), /invalid effort/);
+    if (["api", "advisor"].includes(backend)) assert.throws(() => validateAsk({ ...opts, effort: "xhigh" }, { env: f.env }), /invalid effort/);
+    assert.ok(ADAPTERS[backend].allowed.includes("effort"));
+  }
+  for (const backend of ["agy", "deepseek", "sound"]) assert.throws(() => validateAsk({ backend, prompt: "hello", effort: "high" }, { env: f.env }), /effort.*only/);
+  for (const effort of ["low", "", " ", null, false, 1]) assert.throws(
+    () => validateAsk({ backend: "chatgpt", prompt: "hello", effort }, { env: f.env }),
+    { message: "chatgpt always runs at full power" },
+  );
+  assert.deepEqual(TOOLS[0].inputSchema.properties.effort, { type: "string", description: EFFORT_DESCRIPTION });
+  for (const backend of Object.keys(expected)) assert.ok(new RegExp(`(^|[ /])${backend}[/:]`).test(EFFORT_DESCRIPTION), backend);
+  assert.ok(!EFFORT_DESCRIPTION.includes("\n"));
+  // The exact ruling must also win when a ChatGPT-only profile slims effort
+  // out of the advertised schema before direct MCP invocation.
+  write(path.join(f.dataDir, "profile.json"), JSON.stringify({ name: "lok", backends: Object.fromEntries(Object.keys(ADAPTERS).map(name => [name, name === "chatgpt"])) }));
+  await assert.rejects(callTool("fleet_ask", { backend: "chatgpt", prompt: "hello", effort: "" }, {
+    env: f.env, start: () => assert.fail("must reject before starting a worker"),
+  }), { message: "chatgpt always runs at full power" });
+});
+for (const backend of ["api", "advisor"]) test(`${backend} effort reaches the worker and remains in run.json`, async t => {
+  const f = fixture(t);
+  const { directory } = await reserve(f, { backend, effort: "medium", ...(backend === "advisor" ? { lokAsked: true } : {}) });
+  assert.equal(readAsk(directory).effort, "medium");
+  const completed = await runAskJob(directory, { env: f.env, spawnBackend: backendFake(({ args, child }) => {
+    const flag = backend === "api" ? "--effort" : "--thinking";
+    assert.equal(args[args.indexOf(flag) + 1], backend === "api" ? "medium" : "Medium");
+    if (backend === "advisor") write(path.join(directory, "answer.md"), "fixture answer");
+    finish(child, backend === "api" ? JSON.stringify({ outcome: "done", answer: "fixture answer" }) : "");
+  }) });
+  assert.equal(completed.status, "done"); assert.equal(completed.effort, "medium");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(directory, "run.json"), "utf8")).effort, "medium");
+  const defaults = await reserve(f, { backend, ...(backend === "advisor" ? { lokAsked: true } : {}) });
+  const run = readAsk(defaults.directory), command = ADAPTERS[backend].command(run, { directory: defaults.directory, repo: f.repo });
+  if (backend === "api") {
+    assert.ok(!Object.hasOwn(run, "effort")); assert.ok(!command.args.includes("--effort"));
+  } else {
+    assert.equal(run.effort, "high"); assert.equal(command.args[command.args.indexOf("--thinking") + 1], "High");
+    for (const [effort, thinking] of [["low", "Low"], ["medium", "Medium"], ["high", "High"]]) {
+      const args = ADAPTERS.advisor.command({ ...run, effort }, { directory: defaults.directory, repo: f.repo }).args;
+      assert.equal(args[args.indexOf("--thinking") + 1], thinking);
+    }
+  }
 });
 test("start returns immediately with durable prompt, detached worker and PID handoff", async t => {
   const f = fixture(t), calls = [];
@@ -275,6 +330,7 @@ test("adapter table is the single source of backend contracts", () => {
   const descriptions = Object.fromEntries(Object.entries(TOOLS[0].inputSchema.properties).filter(([, schema]) => schema.description).map(([name, schema]) => [name, schema.description]));
   assert.deepEqual(descriptions, {
     cwd: "Absolute folder the worker runs in.",
+    effort: "codex/image: low|medium|high|xhigh; grok: any; api/advisor: low|medium|high; not chatgpt.",
     resume: "Earlier runId to continue.",
     system: "System-prompt file path.",
     images: "Absolute reference images.",
@@ -329,7 +385,7 @@ for (const [backend, cap] of [["grok", 4], ["api", 8]]) {
 }
 test("API ask records actual model, reasoning, spend and every terminal outcome", async t => {
   const f = fixture(t);
-  for (const key of ["cwd", "effort", "readOnly", "addDirs", "jsonSchema", "resume"]) {
+  for (const key of ["cwd", "readOnly", "addDirs", "jsonSchema", "resume"]) {
     assert.throws(() => validateAsk({ backend: "api", prompt: "hello", [key]: key === "cwd" ? f.root : "not-applicable" }, { env: f.env }), /only/);
   }
   await assert.rejects(reserve(f, { backend: "api", model: "paid/model" }), /needs maxCostUsd/);
@@ -439,7 +495,7 @@ test("advisor requires Lok, buffers waiting stderr, clears on challenge signal, 
   let child, command;
   const running = runAskJob(directory, { env: f.env, spawnBackend: backendFake(value => { child = value.child; command = value; }) });
   while (!child) await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(command.args.slice(1), ["ask", path.join(directory, "prompt.txt"), "--files", attachment, "--out", path.join(directory, "answer.md")]);
+  assert.deepEqual(command.args.slice(1), ["ask", path.join(directory, "prompt.txt"), "--files", attachment, "--thinking", "High", "--out", path.join(directory, "answer.md")]);
   child.stderr.write('status {"waiting');
   assert.equal(readAsk(directory).status, "running");
   child.stderr.write('ForLok":"Google check"}\n');
@@ -588,6 +644,8 @@ test("model menu discovers ids, caches no account data, refreshes sign-in and so
   for (const row of rows) {
     for (const key of ["backend", "found", "signedIn", "detail", "models", "notes"]) assert.ok(Object.hasOwn(row, key), `${row.backend}.${key}`);
     assert.ok(Array.isArray(row.models)); assert.ok(Array.isArray(row.notes));
+    const note = effortNote(row.backend);
+    if (note) assert.ok(row.notes.includes(note), `${row.backend} effort note`);
     for (const model of row.models) {
       assert.ok(["subscription", "free", "paid", "local"].includes(model.cost));
       assert.ok(["edits", "read-only", "text", "image", "sound"].includes(model.access));
@@ -602,9 +660,13 @@ test("model menu discovers ids, caches no account data, refreshes sign-in and so
   assert.equal(by("advisor").signedIn, null); assert.match(by("advisor").notes[0], /only when Lok asks/);
   const saved = fs.readFileSync(path.join(f.dataDir, "model-menu.json"), "utf8");
   for (const forbidden of ["signedIn", '"found"', '"detail"', "fixture current account", "freeDaily", "keyFile", "keyEnv", f.env.FAKE_PROVIDER_KEY]) assert.ok(!saved.includes(forbidden), forbidden);
+  const oldMenu = JSON.parse(saved);
+  oldMenu.rows.find(row => row.backend === "codex").notes.push("effort: stale rule");
+  write(path.join(f.dataDir, "model-menu.json"), JSON.stringify(oldMenu));
   f.env.FAKE_SIGNED_OUT = "1";
   const filtered = await accounts({ ...options, backend: "codex", now: () => 2000 });
   assert.equal(filtered.length, 1); assert.equal(filtered[0].signedIn, false); assert.equal(discoveries.length, 2);
+  assert.ok(filtered[0].notes.includes(effortNote("codex"))); assert.ok(!filtered[0].notes.includes("effort: stale rule"));
   fs.unlinkSync(path.join(f.root, "sao", "finish.py"));
   assert.equal((await accounts({ ...options, backend: "sound" }))[0].models.length, 0);
   await accounts({ ...options, now: () => 601_001 }); assert.equal(discoveries.length, 4);

@@ -3,9 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { CLI, capture, isMain, loadConfig, resolveTool } from './toolkit.mjs';
 import * as api from './api.mjs';
+import { effortValues, validateEffort } from './effort.mjs';
 
 export const aliases = { astra: 'gpt-6-astra', sol: 'gpt-6.1-sol', luna: 'gpt-6-luna' };
-const effortValue = value => { if (!['low', 'medium', 'high', 'xhigh'].includes(value)) throw new Error('effort must be low, medium, high or xhigh'); return value; };
+const effortValue = value => validateEffort('codex', value);
 const positive = (value, label) => { const n = Number(value); if (!Number.isSafeInteger(n) || n < 1) throw new Error(`${label} must be a positive integer`); return n; };
 export function codexArgs(opts, { cwd, last, session } = {}) {
   const mode = opts['read-only'] ? 'read-only' : 'workspace-write';
@@ -27,7 +28,7 @@ export function codexArgs(opts, { cwd, last, session } = {}) {
   return args;
 }
 export async function codexRun(argv) {
-  const opts = CLI('codex-run <id> <prompt-file> [--cwd DIR] [--model astra|sol|luna|ID] [--effort low|medium|high|xhigh] [--add-dir DIR]... [--resume SESSION|last] [--image PNG]... [--read-only]', argv,
+  const opts = CLI(`codex-run <id> <prompt-file> [--cwd DIR] [--model astra|sol|luna|ID] [--effort ${effortValues('codex')}] [--add-dir DIR]... [--resume SESSION|last] [--image PNG]... [--read-only]`, argv,
     { values: ['cwd', 'model', 'effort', 'resume'], repeat: ['add-dir', 'image'], booleans: ['read-only'] });
   if (!opts) return 0;
   const [id, promptFile] = opts._;
@@ -126,6 +127,7 @@ export async function grokRun(argv, { env = process.env, run = capture, stdout =
   const opts = CLI('grok-run <prompt-file> [--model M] [--cwd DIR] [--effort E] [--resume SESSION] [--timeout 600] [--no-preamble] [--json]', argv,
     { values: ['model', 'cwd', 'effort', 'resume', 'timeout'], booleans: ['no-preamble', 'json'] });
   if (!opts) return 0;
+  validateEffort('grok', opts.effort);
   if (opts._.length !== 1) throw new Error('Provide one prompt file');
   const cwd = path.resolve(opts.cwd ?? process.cwd()), source = path.resolve(opts._[0]);
   const timeout = positive(opts.timeout ?? 600, 'timeout');
@@ -148,9 +150,10 @@ export async function grokRun(argv, { env = process.env, run = capture, stdout =
   } finally { if (temporary) fs.rmSync(temporary, { recursive: true, force: true }); }
 }
 export async function apiRun(argv, { env = process.env, stdout = text => process.stdout.write(text), stderr = text => process.stderr.write(text), ...dependencies } = {}) {
-  const opts = CLI('api-run <prompt-file> [--provider P] [--model M] [--max-tokens N] [--max-cost USD] [--system FILE] [--json] | --free-models [--provider P] [--n N]', argv,
-    { values: ['provider', 'model', 'max-tokens', 'max-cost', 'system', 'n'], booleans: ['json', 'free-models'] });
+  const opts = CLI(`api-run <prompt-file> [--provider P] [--model M] [--effort ${effortValues('api')}] [--max-tokens N] [--max-cost USD] [--system FILE] [--json] | --free-models [--provider P] [--n N]`, argv,
+    { values: ['provider', 'model', 'effort', 'max-tokens', 'max-cost', 'system', 'n'], booleans: ['json', 'free-models'] });
   if (!opts) return 0;
+  validateEffort('api', opts.effort);
   const options = { env, ...dependencies }, service = api.provider(opts.provider, options);
   if (opts['free-models']) {
     if (opts._.length) throw new Error('--free-models does not accept a prompt file');
@@ -160,6 +163,7 @@ export async function apiRun(argv, { env = process.env, stdout = text => process
   if (opts._.length !== 1 || opts.n !== undefined) throw new Error('Provide one prompt file');
   const result = await api.chat(service, {
     prompt: fs.readFileSync(opts._[0], 'utf8'), model: opts.model,
+    ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
     ...(opts.system ? { system: fs.readFileSync(opts.system, 'utf8') } : {}),
     ...(opts['max-tokens'] !== undefined ? { maxTokens: positive(opts['max-tokens'], 'max-tokens') } : {}),
     ...(opts['max-cost'] !== undefined ? { maxCostUsd: Number(opts['max-cost']) } : {}),

@@ -10,6 +10,7 @@ import { ADAPTERS, BACKENDS, ASK_KEYS, TERMINAL_STATUSES, LIVE_STATUSES } from "
 export { BACKENDS, ASK_KEYS, TERMINAL_STATUSES } from "./adapters.mjs";
 import { toolkitRepo } from "./runtime.mjs";
 import { assertOrchestrator, workerEnv } from "../../core/lib/worker.mjs";
+import { validateEffort } from "../../core/lib/effort.mjs";
 
 export const FLEET_CLI = fileURLToPath(new URL("../fleet.mjs", import.meta.url));
 export const ASK_JOB = fileURLToPath(new URL("../ask-job.mjs", import.meta.url));
@@ -62,6 +63,7 @@ export function validateAsk(opts, { env = process.env } = {}) {
   if (!BACKENDS.includes(opts.backend)) throw new Error(`backend must be one of ${BACKENDS.join(", ")}`);
   assertEnabled(opts.backend, { env });
   const adapter = ADAPTERS[opts.backend];
+  validateEffort(opts.backend, opts.effort);
   for (const key of Object.keys(opts)) {
     if (opts[key] !== undefined && !["backend", "prompt", "promptFile", ...adapter.allowed].includes(key)) {
       const supported = BACKENDS.filter(name => ADAPTERS[name].allowed.includes(key)).join(" or ");
@@ -89,7 +91,7 @@ export function validateAsk(opts, { env = process.env } = {}) {
     }
   }
   if (opts.readOnly !== undefined && typeof opts.readOnly !== "boolean") throw new Error("readOnly must be a boolean");
-  for (const key of ["resume", "jsonSchema", "model", "effort", "provider", "system"]) if (opts[key] !== undefined) nonempty(opts[key], key);
+  for (const key of ["resume", "jsonSchema", "model", "provider", "system"]) if (opts[key] !== undefined) nonempty(opts[key], key);
   if (opts.system !== undefined && (!path.isAbsolute(opts.system) || !fs.statSync(opts.system).isFile())) throw new Error("system must be an absolute file path");
   if (opts.maxTokens !== undefined && (!Number.isSafeInteger(opts.maxTokens) || opts.maxTokens < 1)) throw new Error("maxTokens must be a positive integer");
   if (opts.maxCostUsd !== undefined && (!Number.isFinite(opts.maxCostUsd) || opts.maxCostUsd < 0)) throw new Error("maxCostUsd must be non-negative");

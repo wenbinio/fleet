@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadToolkit } from "./runtime.mjs";
+import { supportsEffort } from "../../core/lib/effort.mjs";
 
 export function finalText(event) {
   const value = event.text ?? event.content ?? (typeof event.message === "string" ? event.message : event.message?.content) ?? (typeof event.data === "string" ? event.data : event.data?.text ?? event.data?.content) ?? event.output ?? event.answer ?? event.result;
@@ -71,9 +72,8 @@ function sessionResume(opts, resumed, existing, backend, field) {
 export const ADAPTERS = {
   codex: {
     defaults: { model: "astra", effort: "high" },
-    allowed: ["cwd", "model", "effort", "readOnly", "addDirs", "resume"],
+    allowed: ["cwd", "model", "readOnly", "addDirs", "resume"],
     required: ["cwd"],
-    validate(opts) { if (opts.effort !== undefined && !["low", "medium", "high", "xhigh"].includes(opts.effort)) throw new Error("invalid effort"); },
     resume: (opts, resumed, existing) => sessionResume(opts, resumed, existing, "codex", "codexId"),
     prepare: (opts, { runId, resumed }) => ({ codexId: resumed?.codexId ?? runId }),
     command(run, { directory, repo }) {
@@ -134,7 +134,7 @@ export const ADAPTERS = {
   },
   grok: {
     defaults: { model: "grok-4.7" },
-    allowed: ["cwd", "model", "effort", "resume"], maxLive: 4, deniedCodes: [3], json: true,
+    allowed: ["cwd", "model", "resume"], maxLive: 4, deniedCodes: [3], json: true,
     resume: (opts, resumed, existing) => sessionResume(opts, resumed, existing, "grok", "session"),
     prepare: (opts, { resumed }) => resumed ? { resumeSession: resumed.session, session: resumed.session } : {},
     command: (run, { directory, repo }) => runner(repo, "grok", [prompt(directory), "--json", "--cwd", run.cwd ?? directory, "--model", run.model, ...(run.effort ? ["--effort", run.effort] : []), ...(run.resumeSession ? ["--resume", run.resumeSession] : [])]),
@@ -153,7 +153,7 @@ export const ADAPTERS = {
       const rule = api.modelRules(opts.model, opts.maxCostUsd, service);
       return { provider: service.name, model: rule.model, requestedModel: rule.model, free: rule.free };
     },
-    command: (run, { directory, repo }) => runner(repo, "api", [prompt(directory), "--json", "--provider", run.provider, "--model", run.requestedModel ?? run.model, ...(run.maxTokens !== undefined ? ["--max-tokens", String(run.maxTokens)] : []), ...(run.maxCostUsd !== undefined ? ["--max-cost", String(run.maxCostUsd)] : []), ...(run.system ? ["--system", run.system] : [])]),
+    command: (run, { directory, repo }) => runner(repo, "api", [prompt(directory), "--json", "--provider", run.provider, "--model", run.requestedModel ?? run.model, ...(run.effort !== undefined ? ["--effort", run.effort] : []), ...(run.maxTokens !== undefined ? ["--max-tokens", String(run.maxTokens)] : []), ...(run.maxCostUsd !== undefined ? ["--max-cost", String(run.maxCostUsd)] : []), ...(run.system ? ["--system", run.system] : [])]),
     parse({ stdout, exitCode }) {
       if (!stdout.trim()) return { answer: "", status: exitCode === 3 ? "denied" : "failed" };
       const data = jsonResult(stdout);
@@ -166,8 +166,7 @@ export const ADAPTERS = {
     spend: run => Number.isFinite(run.costUsd) && run.costUsd > 0 ? run.costUsd : 0,
   },
   image: {
-    defaults: { model: "sol", effort: "high" }, allowed: ["model", "effort", "images", "outDir"], maxLive: 2,
-    validate(opts) { if (opts.effort !== undefined && !["low", "medium", "high", "xhigh"].includes(opts.effort)) throw new Error("invalid effort"); },
+    defaults: { model: "sol", effort: "high" }, allowed: ["model", "images", "outDir"], maxLive: 2,
     before({ directory, state }) { state.beforeFiles = new Set(artifactFiles(directory, imageFile).map(file => file.path)); },
     command: (run, { directory, repo }) => ({ exe: process.execPath, args: [path.join(repo, "lib", "runners.mjs"), "codex-image", directory, ...(run.images ?? []), "--model", run.model, "--effort", run.effort] }),
     parse({ directory, run, state, exitCode, interrupted }) {
@@ -178,9 +177,9 @@ export const ADAPTERS = {
     transcript: artifactTranscript,
   },
   advisor: {
-    defaults: { model: "argon" }, allowed: ["files", "lokAsked"], maxLive: 2,
+    defaults: { model: "argon", effort: "high" }, allowed: ["files", "lokAsked"], maxLive: 2,
     validate(opts) { if (opts.lokAsked !== true) throw new Error("advisor runs only when Lok asks for Argon"); },
-    command: (run, { directory, repo }) => ({ exe: process.execPath, args: [path.join(repo, "..", "backends", "advisor", "advisor.mjs"), "ask", prompt(directory), ...(run.files?.length ? ["--files", ...run.files] : []), "--out", path.join(directory, "answer.md")] }),
+    command: (run, { directory, repo }) => ({ exe: process.execPath, args: [path.join(repo, "..", "backends", "advisor", "advisor.mjs"), "ask", prompt(directory), ...(run.files?.length ? ["--files", ...run.files] : []), "--thinking", (run.effort ?? "high").replace(/^./, letter => letter.toUpperCase()), "--out", path.join(directory, "answer.md")] }),
     stderrLine(line) {
       const start = line.indexOf("{");
       if (start < 0) return;
@@ -250,6 +249,7 @@ export const ADAPTERS = {
     transcript: artifactTranscript,
   },
 };
+for (const [backend, adapter] of Object.entries(ADAPTERS)) if (supportsEffort(backend)) adapter.allowed.push("effort");
 export const BACKENDS = Object.keys(ADAPTERS);
 export const ASK_KEYS = [...new Set(["backend", "prompt", "promptFile", ...Object.values(ADAPTERS).flatMap(a => a.allowed)])];
 export const TERMINAL_STATUSES = new Set(["done", "failed", "denied", "interrupted", "lost", "empty", "rate_limited", "daily_limit", "signed_out", "limit", "paced"]);
