@@ -11,16 +11,12 @@ Fleet root: use `${CLAUDE_PLUGIN_ROOT}` in Claude Code; elsewhere use the fleet 
 
 Run `node "${FLEET_ROOT}/install.mjs" --plan --json`, then `--apply` for automatic steps. Choose `--profile`, `--host`, `--on` and `--off` as needed. Pass `needs-you` commands to Lok; do not perform logins, keys, remote installers, sound downloads or PATH changes. Existing agent-toolkit users can keep running `node <repo>/setup.mjs --quiet`.
 
-Codex asks approval for `fleet_ask`, `fleet_steer` and `fleet_interrupt`. Headless `codex exec` needs these
-per-tool settings:
+The `lok` profile auto-approves fleet's read-only tools in Codex and agy. The `minimal` profile grants none;
+applying it to a host removes those read-only grants. Each changed settings file gets a once-only
+`.fleet-backup`. Claude keeps interactive approvals; Grok has no documented per-tool approval rule.
 
-```toml
-mcp_servers.fleet.tools.fleet_ask.approval_mode = "approve"
-mcp_servers.fleet.tools.fleet_steer.approval_mode = "approve"
-mcp_servers.fleet.tools.fleet_interrupt.approval_mode = "approve"
-```
-
-Lok decides whether to approve them. The installer never writes approval overrides; pass this choice to him.
+`fleet_ask`, `fleet_steer` and `fleet_interrupt` still ask for approval. The installer never grants these
+mutating permissions; Lok decides whether to approve them.
 
 ## 2. Check the backends
 

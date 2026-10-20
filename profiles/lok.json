@@ -1,6 +1,7 @@
 {
   "backends": {"codex":true,"agy":true,"grok":true,"deepseek":true,"chatgpt":true,"api":true,"image":true,"advisor":true,"sound":true},
-  "hosts": ["claude","codex","grok"],
+  "hosts": ["claude","codex","grok","agy"],
+  "autoApprove": "read-only",
   "rulings": {
     "codex": "Astra builds; Sol reviews and researches; Luna checks given ground truth.",
     "agy": "Read-only audits and second opinions; up to four jobs.",

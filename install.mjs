@@ -11,6 +11,8 @@ import { setupClaude, refreshFleetConfig } from "./core/install-claude.mjs";
 import { dataPaths, migrateData } from "./runner/lib/data-dir.mjs";
 import { readProfile, BACKEND_NAMES, agentsBlock } from "./runner/lib/profile.mjs";
 import { inspectRegistration, registrationMatches, registrationUses, parseNamedInventory } from "./core/install-inventory.mjs";
+import { approvalPlan } from "./core/install-approvals.mjs";
+import { TOOLS } from "./mcp/fleet-mcp.mjs";
 export { setupClaude } from "./core/install-claude.mjs";
 // Root setup keeps its rows/flags and marketplace source, while using the same
 // installer implementation and default profile as standalone Claude installs.
@@ -177,6 +179,12 @@ export async function install(opts, {
     }
   }
   for (const host of hosts) {
+    try {
+      const approval = approvalPlan({ host, user, policy: profile.autoApprove, remove, tools: TOOLS });
+      add({ id: `approvals:${host}`, host, status: approval.status, detail: approval.detail }, approval.apply);
+    } catch (error) {
+      add({ id: `approvals:${host}`, host, status: "needs-you", detail: `Approval settings preserved: ${error.message}` });
+    }
     if (host === "claude") {
       if (remove) {
         const exe = resolveTool("claude", { env, platform });

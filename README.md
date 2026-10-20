@@ -1,6 +1,6 @@
 # Fleet
 
-Version **0.12.0**
+Version **0.13.0**
 
 ## New device, in three steps
 
@@ -29,6 +29,13 @@ node install.mjs --remove --host codex
 `$FLEET_HOME/fleet/profile.json`. Disabled backends disappear from MCP schemas, menus and CLI help, and cannot
 start jobs. Removal unregisters selected hosts and removes owned links/managed rules; it keeps history unless
 `--purge` is explicit. Generic clients receive configuration and rule snippets to paste and remove manually.
+
+`lok` includes Claude, Codex, Grok and agy hosts and uses `autoApprove: "read-only"`; `minimal` uses `"none"`.
+Only fleet tools annotated read-only are approved in Codex and agy. Existing Codex tool tables are preserved,
+including explicit prompt settings. Claude stays interactive; Grok has no documented per-tool approval rule.
+Applying `none` or removing a host deletes those read-only grants for the selected host. Other rules and
+mutating-tool approvals are untouched; the installer never grants `fleet_ask`, `fleet_steer` or `fleet_interrupt`.
+The first change to each settings file creates a `.fleet-backup` containing its original bytes.
 
 The installer reports `done`, `auto`, and `needs-you` steps. It never performs logins, remote tool installations,
 PATH changes or sound downloads. `--set-key openrouter` uses a hidden Windows secure prompt and DPAPI; elsewhere

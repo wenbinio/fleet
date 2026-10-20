@@ -5,6 +5,7 @@ import { dataPaths } from "./data-dir.mjs";
 
 export const BACKEND_NAMES = ["codex", "agy", "deepseek", "grok", "api", "image", "advisor", "chatgpt", "sound"];
 export const PROFILE_ROOT = fileURLToPath(new URL("../../profiles/", import.meta.url));
+export const AUTO_APPROVE_POLICIES = Object.freeze(["none", "read-only"]);
 export function readProfile({ env = process.env, name, overrides = {} } = {}) {
   let active = {};
   try { const paths = dataPaths({ env }), shared = path.join(paths.shared, "profile.json"); active = JSON.parse(fs.readFileSync(fs.existsSync(shared) ? shared : path.join(paths.legacy, "profile.json"), "utf8")); }
@@ -16,7 +17,9 @@ export function readProfile({ env = process.env, name, overrides = {} } = {}) {
   for (const [key, value] of Object.entries(backends)) {
     if (!BACKEND_NAMES.includes(key) || typeof value !== "boolean") throw new Error(`invalid backend override: ${key}`);
   }
-  return { name, backends, hosts: base.hosts ?? [], rulings: base.rulings ?? {} };
+  const autoApprove = base.autoApprove ?? "none";
+  if (!AUTO_APPROVE_POLICIES.includes(autoApprove)) throw new Error("autoApprove must be none or read-only");
+  return { name, backends, hosts: base.hosts ?? [], autoApprove, rulings: base.rulings ?? {} };
 }
 export const enabledBackends = options => BACKEND_NAMES.filter(name => readProfile(options).backends[name] === true);
 export function assertEnabled(backend, options) {
@@ -30,11 +33,8 @@ export function agentsBlock(profile, root) {
     "Fleet runs models through one MCP server and shared run history.",
     `Fleet root: ${root}`, `CLI: node "${path.join(root, "runner", "fleet.mjs")}"`,
     ...enabled.map(name => `- ${name}: ${profile.rulings[name] ?? "available through fleet"}`),
-    "Codex asks approval for fleet_ask, fleet_steer and fleet_interrupt. Headless codex exec needs these per-tool settings:",
-    'mcp_servers.fleet.tools.fleet_ask.approval_mode = "approve"',
-    'mcp_servers.fleet.tools.fleet_steer.approval_mode = "approve"',
-    'mcp_servers.fleet.tools.fleet_interrupt.approval_mode = "approve"',
-    "Lok decides whether to approve these settings; the installer never writes approval overrides.",
+    `This profile's autoApprove policy is ${profile.autoApprove}: the installer manages read-only fleet tool approvals in Codex and agy only.`,
+    "fleet_ask, fleet_steer and fleet_interrupt still ask for approval. Lok decides whether to grant those permissions; the installer never grants them.",
     "Run `wait` in the background and act on its exit.", "<!-- fleet:end -->",
   ].join("\n");
 }

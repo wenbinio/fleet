@@ -65,7 +65,7 @@ export function parseMcpInventory(output, { single = false } = {}) {
   const header = lines.slice(0, index).reverse().find(row => /^\s*name\s+/i.test(row));
   if (header) {
     const columns = header.trim().split(/\s{2,}|\t+/).map(value => value.toLowerCase());
-    const values = line.split(/\s{2,}|\t+/), command = columns.indexOf("command"), args = columns.indexOf("args");
+    const values = line.split(/\s{2,}|\t+/), command = columns.findIndex(name => name === "command" || name === "command/url"), args = columns.indexOf("args");
     if (command >= 0 && values[command]) {
       return { known: true, entry: { ...(args >= 0 ? { command: unquote(values[command]), args: argumentsOf(values[args]) } : commandLine(values[command])), enabled: !values.some(value => value.toLowerCase() === "disabled") } };
     }

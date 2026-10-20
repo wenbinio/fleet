@@ -8,13 +8,14 @@ import { install, inspectBackend, parseArgs, managedBlock, setKey, hiddenKeyProm
 import { loadConfig, saveConfig } from "../core/lib/toolkit.mjs";
 import { dataPaths } from "../runner/lib/data-dir.mjs";
 import { readProfile, agentsBlock } from "../runner/lib/profile.mjs";
-import { toolsFor, callTool } from "../mcp/fleet-mcp.mjs";
+import { toolsFor, callTool, TOOLS } from "../mcp/fleet-mcp.mjs";
 import { startAsk } from "../runner/lib/jobs.mjs";
 import { accounts } from "../runner/lib/accounts.mjs";
 import { cli as fleetCli } from "../runner/fleet.mjs";
 import { injectRuntime } from "../runner/lib/runtime.mjs";
 import * as toolkit from "../core/lib/toolkit.mjs";
 import { parseMcpInventory, registrationMatches, parseNamedInventory, inspectRegistration } from "../core/install-inventory.mjs";
+import { approvalPlan, editCodexApprovals } from "../core/install-approvals.mjs";
 
 function write(file, value) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, value); return file; }
 const realOutput = name => fs.readFileSync(new URL(`./fixtures/cli-real/${name}`, import.meta.url), "utf8");
@@ -75,6 +76,117 @@ function fixture(t) {
   return { home, env, calls, servers, plugins, markets, codexPlugins, codexMarkets, inspections, options, ...dataPaths({ env }) };
 }
 const readOnlyCall = call => call[1] === "--version" || ["mcp list", "mcp list --json", "mcp get fleet --json", "plugin list", "plugin marketplace list", "plugin list --json"].includes(call.slice(1).join(" "));
+const readOnlyTools = TOOLS.filter(tool => tool.annotations?.readOnlyHint === true).map(tool => tool.name);
+test("profile approval policy uses MCP annotations and never includes mutating tools", t => {
+  const f = fixture(t);
+  assert.deepEqual(new Set(readOnlyTools), new Set(["fleet_runs", "fleet_run", "fleet_status", "fleet_transcript", "fleet_accounts"]));
+  const lok = readProfile({ env: f.env, name: "lok" }), minimal = readProfile({ env: f.env, name: "minimal" });
+  assert.equal(lok.autoApprove, "read-only"); assert.ok(lok.hosts.includes("agy")); assert.equal(minimal.autoApprove, "none");
+  assert.throws(() => approvalPlan({ host: "codex", user: f.home, policy: "all", tools: TOOLS }), /none or read-only/);
+  for (const host of ["grok", "claude"]) {
+    const plan = approvalPlan({ host, user: f.home, policy: "read-only", tools: TOOLS });
+    assert.equal(plan.status, "done"); assert.equal(plan.apply, undefined);
+    assert.match(plan.detail, host === "grok" ? /no documented per-tool/ : /interactive approvals/);
+  }
+  // The editor consumes annotation metadata, not a second hardcoded name list.
+  const synthetic = approvalPlan({ host: "agy", user: f.home, policy: "read-only", tools: [{ name: "fixture_read", annotations: { readOnlyHint: true } }, { name: "fixture_write" }] });
+  synthetic.apply();
+  const settings = JSON.parse(fs.readFileSync(path.join(f.home, ".gemini/antigravity-cli/settings.json"), "utf8"));
+  assert.deepEqual(settings.permissions.allow, ["mcp(fleet/fixture_read)"]);
+});
+test("captured agy table parses and repeated apply never re-adds its registered fleet", async t => {
+  const f = fixture(t);
+  const original = realOutput("agy-mcp-list-fleet.txt");
+  assert.equal(registrationMatches(parseMcpInventory(original).entry, {
+    command: "node", args: ["d:/claude-work/agent-toolkit/plugins/fleet/mcp/fleet-mcp.mjs"],
+  }, "win32"), true);
+  const table = original.replace("D:\\claude-work\\agent-toolkit\\plugins\\fleet\\mcp\\fleet-mcp.mjs", path.join(ROOT, "mcp/fleet-mcp.mjs"));
+  const options = { ...f.options, run: async (exe, args) => {
+    if (exe === "fake-agy" && args[0] === "mcp") {
+      f.calls.push(["agy", ...args]); assert.deepEqual(args, ["mcp", "list"]);
+      return { code: 0, stdout: table, stderr: "" };
+    }
+    return f.options.run(exe, args);
+  } };
+  const plan = await install(parseArgs(["--plan", "--host", "agy"]), options);
+  assert.equal(plan.steps.find(step => step.id === "host:agy").status, "done");
+  assert.equal(plan.steps.find(step => step.id === "approvals:agy").status, "auto");
+  assert.ok(!fs.existsSync(path.join(f.home, ".gemini/antigravity-cli/settings.json")));
+  const opts = parseArgs(["--apply", "--host", "agy"]);
+  await install(opts, options);
+  const before = snapshot(f.home);
+  const second = await install(opts, options);
+  assert.deepEqual(snapshot(f.home), before); assert.ok(second.steps.every(step => !step.changed));
+  assert.ok(f.calls.every(readOnlyCall));
+});
+test("agy approvals preserve BOM and other permissions, back up once, and reconcile none/remove", async t => {
+  const f = fixture(t), file = path.join(f.home, ".gemini/antigravity-cli/settings.json");
+  const unrelated = ["shell(read)", "mcp(other/read)", "mcp(fleet/fleet_ask)"];
+  const original = "\uFEFF" + JSON.stringify({ theme: "dark", permissions: { allow: unrelated, deny: ["shell(delete)"], ask: ["mcp(fleet/fleet_steer)"] }, nested: { keep: true } }, null, 2).replaceAll("\n", "\r\n") + "\r\n";
+  write(file, original);
+  const options = parseArgs(["--plan", "--host", "agy"]);
+  const before = snapshot(f.home), plan = await install(options, f.options);
+  assert.equal(plan.steps.find(step => step.id === "approvals:agy").status, "auto");
+  assert.deepEqual(snapshot(f.home), before);
+  await install(parseArgs(["--apply", "--host", "agy"]), f.options);
+  const text = fs.readFileSync(file, "utf8"), config = JSON.parse(text.slice(1));
+  assert.ok(text.startsWith("\uFEFF")); assert.ok(!/(?<!\r)\n/.test(text));
+  assert.deepEqual(config.permissions.allow, [...unrelated, ...readOnlyTools.map(name => `mcp(fleet/${name})`)]);
+  assert.deepEqual(config.permissions.deny, ["shell(delete)"]); assert.deepEqual(config.permissions.ask, ["mcp(fleet/fleet_steer)"]);
+  assert.deepEqual(config.nested, { keep: true }); assert.equal(config.theme, "dark");
+  assert.equal(fs.readFileSync(`${file}.fleet-backup`, "utf8"), original);
+  const applied = snapshot(f.home);
+  await install(parseArgs(["--apply", "--host", "agy"]), f.options);
+  assert.deepEqual(snapshot(f.home), applied);
+  await install(parseArgs(["--apply", "--profile", "minimal", "--host", "agy"]), f.options);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8").slice(1)).permissions.allow, unrelated);
+  await install(parseArgs(["--apply", "--profile", "lok", "--host", "agy"]), f.options);
+  await install(parseArgs(["--remove", "--host", "agy"]), f.options);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8").slice(1)).permissions.allow, unrelated);
+  assert.equal(fs.readFileSync(`${file}.fleet-backup`, "utf8"), original);
+  assert.ok(!fs.readdirSync(path.dirname(file)).some(name => name.endsWith(".tmp")));
+});
+test("Codex approval tables preserve quoted names, multiline text and unrelated bytes", async t => {
+  const f = fixture(t), file = path.join(f.home, ".codex/config.toml");
+  const prefix = '\uFEFF# keep leading comment\r\nmodel = "example"\r\nnotes = """\r\n[mcp_servers.fleet.tools.fleet_status]\r\nnot a real header\r\n"""\r\n';
+  const existing = '[ mcp_servers . \'fleet\' . tools . "fleet_run" ]\r\napproval_mode = "prompt"\r\n';
+  const suffix = '[apps.google_drive.tools."google_drive.search"]\r\napproval_mode = "prompt"\r\n# keep comment\r\n[mcp_servers.fleet.tools.fleet_ask]\r\napproval_mode = "prompt"\r\n';
+  const original = prefix + existing + suffix; write(file, original);
+  const before = snapshot(f.home);
+  const plan = await install(parseArgs(["--plan", "--host", "codex"]), f.options);
+  assert.equal(plan.steps.find(step => step.id === "approvals:codex").status, "auto");
+  assert.deepEqual(snapshot(f.home), before);
+  await install(parseArgs(["--apply", "--host", "codex"]), f.options);
+  const text = fs.readFileSync(file, "utf8");
+  assert.ok(text.startsWith(original)); assert.ok(!/(?<!\r)\n/.test(text));
+  assert.equal((text.match(/\[mcp_servers\.fleet\.tools\.fleet_status\]/g) ?? []).length, 2);
+  assert.ok(!text.includes("[mcp_servers.fleet.tools.fleet_run]\r\n"), "quoted existing prompt table must not get a duplicate");
+  for (const name of readOnlyTools.filter(name => name !== "fleet_run")) assert.ok(text.includes(`[mcp_servers.fleet.tools.${name}]\r\napproval_mode = "approve"`));
+  for (const name of ["fleet_ask", "fleet_steer", "fleet_interrupt"]) assert.ok(!text.includes(`[mcp_servers.fleet.tools.${name}]\r\napproval_mode = "approve"`));
+  const applied = snapshot(f.home);
+  await install(parseArgs(["--apply", "--host", "codex"]), f.options);
+  assert.deepEqual(snapshot(f.home), applied);
+  await install(parseArgs(["--remove", "--host", "codex"]), f.options);
+  const removed = fs.readFileSync(file, "utf8");
+  assert.ok(removed.startsWith(prefix)); assert.ok(removed.includes(suffix));
+  assert.ok(!removed.includes(existing)); assert.ok(!removed.includes('approval_mode = "approve"'));
+  assert.equal(fs.readFileSync(`${file}.fleet-backup`, "utf8"), original);
+  assert.ok(!fs.readdirSync(path.dirname(file)).some(name => name.endsWith(".tmp")));
+});
+test("approval application re-reads intervening edits; malformed files are preserved", t => {
+  const f = fixture(t), file = path.join(f.home, ".gemini/antigravity-cli/settings.json");
+  write(file, '{"permissions":{"allow":[]},"before":true}\n');
+  const plan = approvalPlan({ host: "agy", user: f.home, policy: "read-only", tools: TOOLS });
+  const latest = '{"permissions":{"allow":["mcp(other/new)"]},"after":true}\n'; write(file, latest);
+  plan.apply();
+  const config = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(config.after, true); assert.equal(config.permissions.allow[0], "mcp(other/new)");
+  assert.equal(fs.readFileSync(`${file}.fleet-backup`, "utf8"), latest);
+  write(file, "{invalid");
+  assert.throws(() => approvalPlan({ host: "agy", user: f.home, policy: "read-only", tools: TOOLS }));
+  assert.equal(fs.readFileSync(file, "utf8"), "{invalid");
+  assert.throws(() => editCodexApprovals('text = """unfinished', readOnlyTools, true), /Unterminated/);
+});
 test("captured Codex and Grok registrations use their authoritative structured commands", async () => {
   for (const [host, filename, command] of [
     ["codex", "codex-mcp-get-fleet.json", ["mcp", "get", "fleet", "--json"]],
@@ -343,14 +455,17 @@ test("Codex cleanup also works for an already registered fleet without re-adding
   assert.ok(!f.calls.some(call => call[1] === "mcp" && ["add", "remove"].includes(call[2])));
   assert.ok(f.calls.some(call => call.slice(1).join(" ") === "plugin remove codex-fleet@wenbinio"));
 });
-test("approval guidance is documentation only; existing host approval settings are never changed", async t => {
+test("approval guidance keeps mutating tools subject to Lok and preserves their settings", async t => {
   const f = fixture(t), configFile = path.join(f.home, ".codex/config.toml"), original = '[mcp_servers.fleet.tools.fleet_ask]\napproval_mode = "prompt"\n';
   write(configFile, original);
   await install(parseArgs(["--apply", "--profile", "minimal", "--host", "codex"]), f.options);
   assert.equal(fs.readFileSync(configFile, "utf8"), original);
   const block = fs.readFileSync(path.join(f.home, ".codex/AGENTS.md"), "utf8");
-  for (const tool of ["fleet_ask", "fleet_steer", "fleet_interrupt"]) assert.ok(block.includes(`mcp_servers.fleet.tools.${tool}.approval_mode = "approve"`));
-  assert.match(block, /Lok decides.*installer never writes approval overrides/);
+  for (const tool of ["fleet_ask", "fleet_steer", "fleet_interrupt"]) {
+    assert.ok(block.includes(tool));
+    assert.ok(!block.includes(`mcp_servers.fleet.tools.${tool}.approval_mode = "approve"`));
+  }
+  assert.match(block, /Lok decides.*installer never grants them/);
   assert.ok(!f.calls.flat().some(arg => String(arg).includes("approval_mode")));
 });
 test("plan is read-only and missing accounts require Lok or an explicit off choice", async t => {

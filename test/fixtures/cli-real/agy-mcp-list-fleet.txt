@@ -1,0 +1,2 @@
+NAME   TYPE   STATUS   COMMAND/URL
+fleet  stdio  enabled  node D:\claude-work\agent-toolkit\plugins\fleet\mcp\fleet-mcp.mjs

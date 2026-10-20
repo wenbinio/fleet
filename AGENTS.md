@@ -8,7 +8,7 @@ Claude Code gets the most (hooks, subagents, background notices).
 
 ```bash
 node install.mjs --plan --json            # read this first: done / auto / needs-you
-node install.mjs --apply                  # do the auto part (profile lok: hosts claude, codex, grok)
+node install.mjs --apply                  # do the auto part (profile lok: hosts claude, codex, grok, agy)
 node install.mjs --apply --host codex     # add a harness;  --remove --host codex  takes it out again
 node install.mjs --apply --off grok       # a subscription lapsed: drop the backend everywhere
 node install.mjs --apply --profile minimal  # codex + api only
@@ -20,7 +20,8 @@ node install.mjs --apply --profile minimal  # codex + api only
   (`node install.mjs --set-key openrouter`, typed by him in a hidden prompt), remote installers, sound downloads
   (`--with sound`, several GB), PATH changes. Never do these yourself, never read or print credentials.
 - A backend that isn't found or isn't signed in usually means a lapsed subscription: suggest `--off <backend>`.
-- Codex asks before fleet tools that start work; per-tool auto-approval in Codex's config is Lok's call.
+- `lok` auto-approves read-only fleet tools in Codex and agy; `minimal` grants none. Starting, steering and
+  interrupting jobs still ask. The installer never grants those mutating permissions; they remain Lok's call.
 
 ## Changing fleet
 
