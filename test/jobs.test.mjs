@@ -7,7 +7,8 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { ADAPTERS } from "../runner/lib/adapters.mjs";
+import { ADAPTERS, ADVISOR_NOTICE } from "../runner/lib/adapters.mjs";
+import { accounts, parseModelIds } from "../runner/lib/accounts.mjs";
 import { atomicJson, startAsk, readAsk, runDirectory, liveStatus, waitRuns, validateAsk, listRuns, ASK_JOB } from "../runner/lib/jobs.mjs";
 import { runAskJob, backendCommand } from "../runner/ask-job.mjs";
 import { toolkitRepo } from "../runner/lib/toolkit-link.mjs";
@@ -24,14 +25,21 @@ function fixture(t) {
   const env = { ...process.env, AGENT_TOOLKIT_HOME: path.join(root, "home"), CLAUDE_PLUGIN_DATA: dataDir, FLEET_FAKE_RUNS: runsDir };
   write(path.join(env.AGENT_TOOLKIT_HOME, "config.json"), JSON.stringify({ repo, providers: [{name:"openrouter",kind:"openai",baseUrl:"https://openrouter.invalid/api/v1",keyEnv:"FAKE_PROVIDER_KEY"}] }));
   write(path.join(repo, "lib/toolkit.mjs"), `
-    export const loadConfig = env => ({ runsDir: env.FLEET_FAKE_RUNS });
+    import fs from "node:fs"; import path from "node:path";
+    export const loadConfig = env => ({ ...JSON.parse(fs.readFileSync(path.join(env.AGENT_TOOLKIT_HOME,"config.json"),"utf8")), runsDir: env.FLEET_FAKE_RUNS });
     export const resolveTool = name => name;
-    export const signInStatus = async name => ({ backend: name === "dsh" ? "deepseek" : name, found: true, signedIn: name === "dsh" ? null : true, detail: "fixture" });
+    export const capture = async () => ({ code: 0, stdout: "grok-4.7\\ngemini-3.8-flash-low", stderr: "" });
+    export const signInStatus = async (name, {env}) => ({ backend: name === "dsh" ? "deepseek" : name, found: true, signedIn: name === "dsh" ? null : env.FAKE_SIGNED_OUT !== "1", detail: "fixture current account" });
   `);
   write(path.join(repo, "lib/api.mjs"), `export * from ${JSON.stringify(new URL("../../../lib/api.mjs", import.meta.url).href)};`);
+  write(path.join(repo, "lib/media.mjs"), `export * from ${JSON.stringify(new URL("../../../lib/media.mjs", import.meta.url).href)};`);
+  write(path.join(repo, "skills/gemini-advisor/advisor.mjs"), "// fake advisor; never executed");
   // A complete fake runner can also be launched by the detached integration test.
   write(path.join(repo, "lib/runners.mjs"), `
     import fs from "node:fs"; import path from "node:path";
+    import {pathToFileURL} from "node:url";
+    export {aliases} from ${JSON.stringify(new URL("../../../lib/runners.mjs", import.meta.url).href)};
+    if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
     const args = process.argv.slice(2), backend = args[0];
     if (backend === "codex-run") {
       const id=args[1], dir=path.join(process.env.FLEET_FAKE_RUNS,"codex",id);
@@ -39,7 +47,7 @@ function fixture(t) {
       fs.writeFileSync(path.join(dir,"r"+round+".last.txt"),"complete fake Codex answer");
       fs.writeFileSync(path.join(dir,"r"+round+".events.jsonl"),JSON.stringify({type:"item.completed",item:{type:"agent_message",text:"complete"}})+"\\n");
       console.log("["+id+"] round "+round+" exit 0, session fake-session");
-    } else console.log("complete fake agy answer");
+    } else console.log("complete fake agy answer"); }
   `);
   write(path.join(repo, "bin/dsh-run.ps1"), `'{"type":"final","text":"complete fake DeepSeek answer","session_id":"fake-dsh"}'\nexit 0\n`);
   return { root, repo, dataDir, runsDir, env };
@@ -63,7 +71,7 @@ function backendFake(action) {
   };
 }
 async function reserve(f, opts = {}) {
-  const result = await startAsk({ backend: "codex", prompt: "implement the thing", ...(opts.backend === "api" ? {} : { cwd: f.root }), ...opts }, { env: f.env, spawnJob: detachedFake() });
+  const result = await startAsk({ backend: "codex", prompt: "implement the thing", ...(["api", "image", "advisor", "sound"].includes(opts.backend) ? {} : { cwd: f.root }), ...opts }, { env: f.env, spawnJob: detachedFake() });
   return { result, directory: runDirectory(f.dataDir, result.runId) };
 }
 function finish(child, stdout = "", stderr = "", code = 0) {
@@ -78,7 +86,7 @@ test("toolkit discovery uses config and returns an actionable missing error", t 
 test("ask validates backend options, prompt exclusivity and absolute directories", t => {
   const f = fixture(t), valid = { backend: "codex", prompt: "hello", cwd: f.root };
   for (const changes of [{ backend: "other" }, { promptFile: path.join(f.root, "missing") }, { prompt: undefined }, { cwd: "." }, { effort: "max" }, { readOnly: "yes" }, { addDirs: "dir" }, { jsonSchema: "{}" }, { unknown: true }]) assert.throws(() => validateAsk({ ...valid, ...changes }));
-  for (const key of ["effort", "readOnly", "resume"]) assert.throws(() => validateAsk({ backend: "agy", prompt: "hello", [key]: "x" }), /codex(?: or grok)? only/);
+  for (const key of ["effort", "readOnly", "resume"]) assert.throws(() => validateAsk({ backend: "agy", prompt: "hello", [key]: "x" }), /codex(?: or grok)?(?: or image)? only/);
   assert.throws(() => validateAsk({ backend: "deepseek", prompt: "hello", cwd: f.root, model: "other" }), /invalid deepseek model/);
   assert.throws(() => validateAsk({ backend: "deepseek", prompt: "hello", cwd: f.root, addDirs: [] }), /codex or agy only/);
   assert.doesNotThrow(() => validateAsk({ backend: "agy", prompt: "hello", jsonSchema: "{}" }));
@@ -220,7 +228,7 @@ test("MCP exposes eight concise tools and routes each kind including accounts an
   await assert.rejects(callTool("fleet_steer", { runId: id, text: "continue" }, options), /fleet_ask with resume/);
   assert.equal((await callTool("fleet_interrupt", { runId: id }, options)).value.ok, true);
   assert.ok(fs.existsSync(path.join(directory, "interrupt.flag")));
-  assert.equal((await callTool("fleet_accounts", {}, { ...options, apiOptions: { keyReader: async () => null } })).value.length, 5);
+  assert.equal((await callTool("fleet_accounts", {}, { ...options, apiOptions: { keyReader: async () => null, fetch: async () => { throw new Error("fake unavailable catalog"); } } })).value.length, 8);
   const delegate = path.join(f.dataDir, "runs", "delegate");
   write(path.join(delegate, "state.json"), '{"status":"awaiting-steer","turns":1}');
   write(path.join(delegate, "events.jsonl"), JSON.stringify({ type: "agentMessage", text: "old".repeat(100_000) }) + "\n" + Array.from({ length: 12 }, (_, i) => JSON.stringify({ type: "agentMessage", text: `beat-${i}` })).join("\n"));
@@ -251,7 +259,7 @@ test("MCP exposes eight concise tools and routes each kind including accounts an
   await assert.rejects(callTool("fleet_runs", { limit: -1 }, options), /positive integer/);
 });
 test("adapter table is the single source of backend contracts", () => {
-  assert.deepEqual(Object.keys(ADAPTERS), ["codex", "agy", "deepseek", "grok", "api"]);
+  assert.deepEqual(Object.keys(ADAPTERS), ["codex", "agy", "deepseek", "grok", "api", "image", "advisor", "sound"]);
   for (const adapter of Object.values(ADAPTERS)) {
     assert.equal(typeof adapter.defaults, "object"); assert.ok(Array.isArray(adapter.allowed));
     for (const operation of ["command", "parse", "transcript"]) assert.equal(typeof adapter[operation], "function");
@@ -316,7 +324,7 @@ test("API ask records actual model, reasoning, spend and every terminal outcome"
   const first = runDirectory(f.dataDir, ids[0]);
   atomicJson(path.join(first, "run.json"), { ...readAsk(first), provider: "other-provider" });
   f.env.FAKE_PROVIDER_KEY = randomUUID();
-  const accounts = (await callTool("fleet_accounts", {}, { env: f.env, apiOptions: { keyReader: async () => f.env.FAKE_PROVIDER_KEY, fetch: async () => ({ status: 200, text: async () => '{"data":{"limit":10,"limit_remaining":9}}' }) } })).value;
+  const accounts = (await callTool("fleet_accounts", {}, { env: f.env, apiOptions: { keyReader: async () => f.env.FAKE_PROVIDER_KEY, fetch: async url => ({ status: 200, text: async () => url.endsWith("/models") ? '{"data":[]}' : '{"data":{"limit":10,"limit_remaining":9}}' }) } })).value;
   assert.ok(Math.abs(accounts.find(a => a.backend === "api").spendUsd - 0.05) < 1e-9);
   assert.ok(!JSON.stringify(accounts).includes(f.env.FAKE_PROVIDER_KEY));
   const badExit = await reserve(f, { backend: "api" });
@@ -332,6 +340,211 @@ test("historical transcripts remain readable without toolkit config, and models 
   fs.unlinkSync(path.join(f.env.AGENT_TOOLKIT_HOME, "config.json"));
   assert.match((await callTool("fleet_transcript", { runId: done.result.runId }, { env: f.env })).value, /saved answer/);
   assert.equal((await callTool("fleet_status", { runId: done.result.runId }, { env: f.env })).value.status, "done");
+});
+function installSound(f) {
+  const configFile = path.join(f.env.AGENT_TOOLKIT_HOME, "config.json");
+  const config = { ...JSON.parse(fs.readFileSync(configFile, "utf8")), soundVenv: path.join(f.root, "sao", "venv"), mossVenv: path.join(f.root, "moss", "venv") };
+  for (const venv of [config.soundVenv, config.mossVenv]) for (const file of ["Scripts/python.exe", "bin/python"]) write(path.join(venv, file), "fake python");
+  for (const file of ["gen.py", "finish.py"]) write(path.join(f.root, "sao", file), "# fake");
+  for (const file of ["moss_gen.py", "peak_norm.py"]) write(path.join(f.root, "moss", "tools", file), "# fake");
+  write(configFile, JSON.stringify(config));
+  return config;
+}
+test("image validates refs, collects only new files with sizes, copies outputs and exposes them", async t => {
+  const f = fixture(t), ref = write(path.join(f.root, "reference.png"), "reference"), outDir = path.join(f.root, "output");
+  fs.mkdirSync(outDir);
+  assert.throws(() => validateAsk({ backend: "image", prompt: "draw", images: ["relative.png"] }), /absolute existing/);
+  assert.throws(() => validateAsk({ backend: "image", prompt: "draw", images: [path.join(f.root, "missing.png")] }), /absolute existing/);
+  assert.throws(() => validateAsk({ backend: "image", prompt: "draw", outDir: "." }), /absolute existing/);
+  const { directory, result } = await reserve(f, { backend: "image", images: [ref], outDir });
+  write(path.join(directory, "old.jpg"), "old");
+  const run = await runAskJob(directory, { env: f.env, spawnBackend: backendFake(({ args, opts, child }) => {
+    assert.deepEqual(args.slice(1), ["codex-image", directory, ref, "--model", "sol", "--effort", "high"]);
+    assert.equal(opts.cwd, directory);
+    write(path.join(directory, "nested", "new.PNG"), "image bytes");
+    write(path.join(directory, "log.txt"), "log".repeat(1500));
+    finish(child);
+  }) });
+  assert.equal(run.status, "done"); assert.equal(run.files.length, 2);
+  assert.deepEqual(run.files.map(file => file.bytes), [11, 11]);
+  assert.ok(run.files.every(file => !file.path.endsWith("old.jpg")));
+  assert.equal(fs.readFileSync(path.join(outDir, "nested", "new.PNG"), "utf8"), "image bytes");
+  assert.equal(fs.readFileSync(path.join(directory, "answer.txt"), "utf8").length, 3000);
+  assert.equal((await callTool("fleet_run", { runId: result.runId }, { env: f.env })).value.files.length, 2);
+  assert.match((await callTool("fleet_transcript", { runId: result.runId }, { env: f.env })).value, /"files":.*new.PNG/);
+  const empty = await reserve(f, { backend: "image" });
+  const failed = await runAskJob(empty.directory, { env: f.env, spawnBackend: backendFake(({ child }) => finish(child)) });
+  assert.equal(failed.status, "failed"); assert.equal(failed.error, "no images produced");
+});
+test("advisor requires Lok, buffers waiting stderr, clears on challenge signal, and never retries", async t => {
+  const f = fixture(t);
+  await assert.rejects(reserve(f, { backend: "advisor" }), /advisor runs only when Lok asks for Argon/);
+  const attachment = write(path.join(f.root, "attachment.txt"), "context");
+  const { directory, result } = await reserve(f, { backend: "advisor", lokAsked: true, files: [attachment] });
+  let child, command;
+  const running = runAskJob(directory, { env: f.env, spawnBackend: backendFake(value => { child = value.child; command = value; }) });
+  while (!child) await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(command.args.slice(1), ["ask", path.join(directory, "prompt.txt"), "--files", attachment, "--out", path.join(directory, "answer.md")]);
+  child.stderr.write('status {"waiting');
+  assert.equal(readAsk(directory).status, "running");
+  child.stderr.write('ForLok":"Google check"}\n');
+  assert.equal(readAsk(directory).status, "waiting_for_lok");
+  assert.equal((await callTool("fleet_status", { runId: result.runId }, { env: f.env })).value.notice, ADVISOR_NOTICE);
+  assert.equal((await callTool("fleet_run", { runId: result.runId }, { env: f.env })).value.notice, ADVISOR_NOTICE);
+  const notices = [];
+  const waiting = waitRuns([result.runId], { env: f.env, pollMs: 1, warn: notice => notices.push(notice), timeout: 2 });
+  // Let several waiter polls observe the same state.
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.equal(notices.length, 1); assert.match(notices[0], /Chrome window for Lok/);
+  child.stderr.write('{"challenge":"cle'); child.stderr.write('ared","afterSecs":2}\n');
+  assert.equal(readAsk(directory).status, "running"); assert.equal(readAsk(directory).notice, undefined);
+  write(path.join(directory, "answer.md"), "Argon's answer");
+  finish(child);
+  assert.equal((await running).status, "done"); assert.equal((await waiting)[0].answer, "Argon's answer"); assert.equal(notices.length, 1);
+  const failed = await reserve(f, { backend: "advisor", lokAsked: true });
+  let calls = 0;
+  const failure = await runAskJob(failed.directory, { env: f.env, spawnBackend: backendFake(({ child }) => { calls++; finish(child, "", "challenge timeout", 1); }) });
+  assert.equal(failure.status, "failed"); assert.equal(calls, 1);
+});
+test("waiting advisor jobs count against caps, timeout remains live and dead PID is lost", async t => {
+  const f = fixture(t);
+  const first = await reserve(f, { backend: "advisor", lokAsked: true });
+  atomicJson(path.join(first.directory, "run.json"), { ...readAsk(first.directory), status: "waiting_for_lok", notice: ADVISOR_NOTICE });
+  await reserve(f, { backend: "advisor", lokAsked: true });
+  await assert.rejects(reserve(f, { backend: "advisor", lokAsked: true }), /runs 2 jobs at once/);
+  const notices = [], rows = await waitRuns([first.result.runId], { env: f.env, timeout: 0, warn: line => notices.push(line) });
+  assert.equal(rows[0].status, "waiting_for_lok"); assert.equal(rows[0].error, "wait timeout"); assert.equal(rows[0].notice, ADVISOR_NOTICE); assert.equal(notices.length, 1);
+  const lost = liveStatus(readAsk(first.directory), () => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); });
+  assert.equal(lost.status, "lost");
+  for (let i = 0; i < 2; i++) await reserve(f, { backend: "image" });
+  await assert.rejects(reserve(f, { backend: "image" }), /runs 2 jobs at once/);
+});
+for (const platform of ["win32", "linux"]) for (const engine of ["sao", "moss"]) {
+  test(`sound ${engine} on ${platform} uses ordered commands, cue seeds and artifact copies`, async t => {
+    const f = fixture(t), config = installSound(f), calls = [], outDir = path.join(f.root, "audio-output");
+    fs.mkdirSync(outDir);
+    const { directory, result } = await reserve(f, { backend: "sound", engine, seconds: 2.5, takes: 3, ...(engine === "sao" ? { music: true, seed: 20 } : {}), outDir });
+    const run = await runAskJob(directory, { env: f.env, platform, spawnBackend: backendFake(({ exe, args, opts, child }) => {
+      calls.push({ exe, args }); assert.equal(opts.cwd, directory);
+      if (args[0].endsWith("finish.py")) {
+        write(path.join(directory, "web", "take-1.ogg"), "ogg");
+        write(path.join(directory, "web", "take-1.m4a"), "m4a");
+        write(path.join(directory, "web", "sounds.json"), '{"take-1":{"seconds":2.5}}');
+      }
+      finish(child);
+    }) });
+    assert.equal(run.status, "done"); assert.equal(run.model, engine); assert.equal(run.files.length, 6);
+    assert.deepEqual(calls.map(c => path.basename(c.args[0])), engine === "sao" ? ["gen.py", "finish.py"] : ["moss_gen.py", "peak_norm.py", "finish.py"]);
+    const python = venv => path.join(venv, ...(platform === "win32" ? ["Scripts", "python.exe"] : ["bin", "python"]));
+    assert.deepEqual(calls.map(c => c.exe), engine === "sao" ? [python(config.soundVenv), python(config.soundVenv)] : [python(config.mossVenv), python(config.mossVenv), python(config.soundVenv)]);
+    assert.equal(calls[0].args[1], path.join(directory, "cues.json"));
+    assert.equal(calls.at(-1).args[1], path.join(directory, engine === "moss" ? "norm" : "raw"));
+    if (engine === "sao") assert.deepEqual(calls.at(-1).args.slice(-2), ["--music", "take-1,take-2,take-3"]);
+    const cues = JSON.parse(fs.readFileSync(path.join(directory, "cues.json"), "utf8"));
+    assert.deepEqual(cues.map(c => c.seed), engine === "sao" ? [20, 21, 22] : [1, 2, 3]);
+    assert.ok(cues.every((c, i) => c.key === `take-${i + 1}` && c.seconds === 2.5 && c.steps === 100 && c.prompt === "implement the thing" && c.music === (engine === "sao")));
+    assert.equal((await callTool("fleet_run", { runId: result.runId }, { env: f.env })).value.files.length, 6);
+    assert.match((await callTool("fleet_transcript", { runId: result.runId }, { env: f.env })).value, /sounds.json/);
+  });
+}
+test("sound validates options, caps engines together, stops after failed/interrupted stage and requires audio", async t => {
+  const f = fixture(t); installSound(f);
+  const opts = { backend: "sound", prompt: "sound", seconds: 1 };
+  for (const change of [{ engine: "moss", music: true }, { seconds: 0.4 }, { seconds: 48 }, { seconds: "1" }, { takes: 0 }, { takes: 6 }, { seed: 1.5 }, { music: "true" }]) assert.throws(() => validateAsk({ ...opts, ...change }));
+  const first = await reserve(f, { backend: "sound", seconds: 1 });
+  await assert.rejects(reserve(f, { backend: "sound", engine: "moss", seconds: 1 }), /runs 1 jobs at once/);
+  let calls = 0;
+  const failed = await runAskJob(first.directory, { env: f.env, spawnBackend: backendFake(({ child }) => { calls++; finish(child, "", "generation failed", 1); }) });
+  assert.equal(calls, 1); assert.equal(failed.status, "failed");
+  const empty = await reserve(f, { backend: "sound", seconds: 1 });
+  const noAudio = await runAskJob(empty.directory, { env: f.env, spawnBackend: backendFake(({ child }) => { write(path.join(empty.directory, "web", "sounds.json"), "{}"); finish(child); }) });
+  assert.equal(noAudio.status, "failed"); assert.match(noAudio.error, /no output files/);
+  const interrupted = await reserve(f, { backend: "sound", seconds: 1 }); calls = 0;
+  const stopped = await runAskJob(interrupted.directory, { env: f.env, spawnBackend: backendFake(({ child }) => {
+    calls++; write(path.join(interrupted.directory, "interrupt.flag"), ""); finish(child);
+  }) });
+  assert.equal(calls, 1); assert.equal(stopped.status, "interrupted");
+});
+test("model menu discovers ids, caches no account data, refreshes sign-in and sound, and filters backends", async t => {
+  const f = fixture(t), config = installSound(f), discoveries = [], requests = [];
+  f.env.FAKE_PROVIDER_KEY = randomUUID();
+  const options = { env: f.env, dataDir: f.dataDir, now: () => 1000, discover: async name => {
+    discoveries.push(name);
+    return { code: name === "grok" ? 1 : 0, stdout: name === "grok" ? "not authenticated\nAvailable: grok-4.7 grok-4.1" : "gemini-3.8-flash-low\nclaude-sonnet-4-6", stderr: "" };
+  }, apiOptions: { keyReader: async () => f.env.FAKE_PROVIDER_KEY, fetch: async url => {
+    requests.push(url);
+    const data = url.endsWith("/models") ? [
+      ...["vendor/a:free", "vendor/b:free", "other/c:free"].map(id => ({ id, pricing: { prompt: "0", completion: "0" }, architecture: { output_modalities: ["text"] } })),
+      { id: "vendor/paid", pricing: { prompt: "0.01", completion: "0.01" }, architecture: { output_modalities: ["text"] } },
+    ] : { limit: 10, limit_remaining: 9, free_model_daily_requests: { used: 2, limit: 1000, remaining: 998 } };
+    return { status: 200, text: async () => JSON.stringify({ data }) };
+  } } };
+  const rows = await accounts(options);
+  assert.deepEqual(new Set(rows.map(r => r.backend)), new Set(Object.keys(ADAPTERS)));
+  for (const row of rows) {
+    for (const key of ["backend", "found", "signedIn", "detail", "models", "notes"]) assert.ok(Object.hasOwn(row, key), `${row.backend}.${key}`);
+    assert.ok(Array.isArray(row.models)); assert.ok(Array.isArray(row.notes));
+    for (const model of row.models) {
+      assert.ok(["subscription", "free", "paid", "local"].includes(model.cost));
+      assert.ok(["edits", "read-only", "text", "image", "sound"].includes(model.access));
+    }
+  }
+  const by = name => rows.find(r => r.backend === name);
+  assert.deepEqual(by("codex").models.map(m => [m.id, m.modelId]), [["astra", "gpt-6-astra"], ["sol", "gpt-6.1-sol"], ["luna", "gpt-6-luna"]]);
+  assert.deepEqual(by("agy").models.map(m => m.id), ["gemini-3.8-flash-low", "claude-sonnet-4-6"]);
+  assert.deepEqual(by("grok").models.map(m => m.id), ["grok-4.7", "grok-4.1"]);
+  assert.deepEqual(by("sound").models.map(m => m.id), ["sao", "moss"]);
+  assert.equal(by("api").models.length, 3); assert.match(by("api").notes.join(" "), /catalogue size: 4/); assert.ok(!by("api").models.some(m => m.id.includes("paid")));
+  assert.equal(by("advisor").signedIn, null); assert.match(by("advisor").notes[0], /only when Lok asks/);
+  const saved = fs.readFileSync(path.join(f.dataDir, "model-menu.json"), "utf8");
+  for (const forbidden of ["signedIn", '"found"', '"detail"', "fixture current account", "freeDaily", "keyFile", "keyEnv", f.env.FAKE_PROVIDER_KEY]) assert.ok(!saved.includes(forbidden), forbidden);
+  f.env.FAKE_SIGNED_OUT = "1";
+  const filtered = await accounts({ ...options, backend: "codex", now: () => 2000 });
+  assert.equal(filtered.length, 1); assert.equal(filtered[0].signedIn, false); assert.equal(discoveries.length, 2);
+  fs.unlinkSync(path.join(f.root, "sao", "finish.py"));
+  assert.equal((await accounts({ ...options, backend: "sound" }))[0].models.length, 0);
+  await accounts({ ...options, now: () => 601_001 }); assert.equal(discoveries.length, 4);
+  assert.ok(requests.some(url => url.endsWith("/key")));
+  assert.ok(!JSON.stringify(rows).includes(f.env.FAKE_PROVIDER_KEY));
+  assert.deepEqual(parseModelIds('Not authenticated\n{"models":[{"id":"grok-4.7"}]}\ngrok-4.7'), ["grok-4.7"]);
+  assert.deepEqual(parseModelIds('Not authenticated\n{"models":[{"id":"vendor/other-v1"},{"id":"o3"}]}'), ["vendor/other-v1", "o3"]);
+  assert.deepEqual(parseModelIds("Models: o1 o3 o4-mini"), ["o1", "o3", "o4-mini"]);
+  await assert.rejects(accounts({ ...options, backend: "unknown" }), /invalid backend/);
+  const mcp = await callTool("fleet_accounts", { backend: "image" }, { env: f.env, menuOptions: options, apiOptions: options.apiOptions });
+  assert.deepEqual(mcp.value.map(r => r.backend), ["image"]);
+  const printed = [];
+  assert.equal(await cli(["accounts", "--backend", "advisor"], { env: f.env, menuOptions: options, apiOptions: options.apiOptions, print: text => printed.push(JSON.parse(text)) }), 0);
+  assert.deepEqual(printed[0].map(r => r.backend), ["advisor"]);
+});
+test("menu fallback excludes failed agy output and CLI forwards media options", async t => {
+  const f = fixture(t);
+  const rows = await accounts({ env: f.env, dataDir: f.dataDir, discover: async () => ({ code: 1, stdout: "gemini-should-not-use", stderr: "" }), apiOptions: { keyReader: async () => null, fetch: async () => { throw new Error("fake offline"); } } });
+  assert.deepEqual(rows.find(row => row.backend === "agy").models.map(m => m.id), ["gemini-3.8-flash-low"]);
+  const received = [];
+  const options = { env: f.env, print() {}, start: async opts => { received.push(opts); return {}; } };
+  await cli(["ask", "--backend", "image", "--prompt", "draw", "--image", "/ref-a.png", "--image", "/ref-b.png", "--out-dir", "/output"], options);
+  await cli(["ask", "--backend", "advisor", "--prompt", "ask", "--lok-asked", "--file", "/context.txt"], options);
+  await cli(["ask", "--backend", "sound", "--prompt", "bell", "--engine", "sao", "--seconds", "2.5", "--takes", "3", "--seed", "20", "--music"], options);
+  assert.deepEqual(received[0].images, ["/ref-a.png", "/ref-b.png"]); assert.equal(received[0].outDir, "/output");
+  assert.equal(received[1].lokAsked, true); assert.deepEqual(received[1].files, ["/context.txt"]);
+  assert.deepEqual(received[2], { backend: "sound", prompt: "bell", engine: "sao", seconds: 2.5, takes: 3, seed: 20, music: true });
+});
+test("API menu retains separate provider rows and spend when a generic catalog is unavailable", async t => {
+  const f = fixture(t), configFile = path.join(f.env.AGENT_TOOLKIT_HOME, "config.json"), config = JSON.parse(fs.readFileSync(configFile, "utf8"));
+  config.providers.push({ name: "generic", kind: "openai", baseUrl: "https://generic.invalid/v1", keyEnv: "FAKE_PROVIDER_KEY" });
+  write(configFile, JSON.stringify(config));
+  f.env.FAKE_PROVIDER_KEY = randomUUID();
+  for (const [name, cost] of [["openrouter", 0.1], ["generic", 0.2]]) {
+    write(path.join(f.dataDir, "runs", name, "run.json"), JSON.stringify({ kind: "ask", runId: name, backend: "api", provider: name, costUsd: cost, status: "done", startedAt: "2026-10-20T00:00:00Z" }));
+  }
+  const rows = await accounts({ backend: "api", env: f.env, dataDir: f.dataDir, apiOptions: { keyReader: async () => f.env.FAKE_PROVIDER_KEY, fetch: async url => {
+    if (url.startsWith("https://generic.invalid")) throw new Error("generic has no catalog");
+    return { status: 200, text: async () => JSON.stringify({ data: url.endsWith("/models") ? [] : { limit: 10 } }) };
+  } } });
+  assert.deepEqual(rows.map(row => row.provider), ["openrouter", "generic"]);
+  assert.deepEqual(rows.map(row => row.spendUsd), [0.1, 0.2]);
+  assert.equal(rows[1].found, true); assert.equal(rows[1].signedIn, null);
+  assert.match(rows[1].notes.join(" "), /catalogue size: unavailable/);
 });
 const subprocess = spawnSync(process.execPath, ["-e", ""], { windowsHide: true });
 test("detached worker survives launcher and writes results using only fake toolkit runners", { skip: subprocess.error ? `child processes unavailable: ${subprocess.error.code}` : false, timeout: 15_000 }, async t => {

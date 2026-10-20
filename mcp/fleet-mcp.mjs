@@ -6,7 +6,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
 import { startAsk, listRuns, runDirectory, kindOf, readAsk, answerOf, capText, transcriptSource, BACKENDS } from "../runner/lib/jobs.mjs";
-import { loadToolkit } from "../runner/lib/toolkit-link.mjs";
+import { accounts } from "../runner/lib/accounts.mjs";
 import { finalText } from "../runner/ask-job.mjs";
 
 import { resolveDataDir } from "../runner/lib/data-dir.mjs";
@@ -19,14 +19,14 @@ const TRUNCATION_NOTE = "\n\n[Transcript truncated to 40000 characters.]";
 const str = { type: "string" };
 const runSchema = objectSchema({ runId: str }, ["runId"]);
 export const TOOLS = [
-  { name: "fleet_ask", description: "Start a backend job and return its wait command.", inputSchema: objectSchema({ backend: { enum: BACKENDS }, prompt: str, promptFile: str, cwd: str, model: str, effort: str, readOnly: { type: "boolean" }, addDirs: { type: "array", items: str }, jsonSchema: str, resume: str, provider: str, maxTokens: { type: "integer", minimum: 1 }, maxCostUsd: { type: "number", minimum: 0 }, system: { type: "string", description: "System-prompt file path." } }, ["backend"]) },
+  { name: "fleet_ask", description: "Start a backend job and return its wait command.", inputSchema: objectSchema({ backend: { enum: BACKENDS }, prompt: str, promptFile: str, cwd: str, model: str, effort: str, readOnly: { type: "boolean" }, addDirs: { type: "array", items: str }, jsonSchema: str, resume: str, provider: str, maxTokens: { type: "integer", minimum: 1 }, maxCostUsd: { type: "number", minimum: 0 }, system: { type: "string", description: "System-prompt file path." }, images: { type: "array", items: str }, outDir: str, files: { type: "array", items: str }, lokAsked: { type: "boolean" }, engine: { enum: ["sao", "moss"] }, seconds: { type: "number", minimum: 0.5, maximum: 47 }, takes: { type: "integer", minimum: 1, maximum: 5 }, seed: { type: "integer" }, music: { type: "boolean" } }, ["backend"]) },
   { name: "fleet_runs", description: "List recent jobs, batches and delegates.", inputSchema: objectSchema({ limit: { type: "integer", minimum: 1, default: 20 }, backend: { enum: BACKENDS } }) },
   { name: "fleet_run", description: "Read one run's results and answer.", inputSchema: runSchema },
   { name: "fleet_transcript", description: "Read a run or batch task transcript.", inputSchema: objectSchema({ runId: str, taskId: str }, ["runId"]) },
   { name: "fleet_status", description: "Show a live run's status and recent event beats.", inputSchema: runSchema },
   { name: "fleet_steer", description: "Queue a steering message for a delegate.", inputSchema: objectSchema({ runId: str, text: str }, ["runId", "text"]) },
   { name: "fleet_interrupt", description: "Request interruption of a job or delegate.", inputSchema: runSchema },
-  { name: "fleet_accounts", description: "Check backend sign-in status without logging in.", inputSchema: objectSchema({}) },
+  { name: "fleet_accounts", description: "Show models and current sign-in status.", inputSchema: objectSchema({ backend: { enum: BACKENDS } }) },
 ].map(tool => ["fleet_runs", "fleet_run", "fleet_transcript", "fleet_status", "fleet_accounts"].includes(tool.name) ? { ...tool, annotations: { readOnlyHint: true } } : tool);
 
 function stringSchema(description) {
@@ -242,7 +242,7 @@ async function eventBeats(file, last) {
   return (last ? lines.slice(-last) : lines).map(line => { try { return eventBeat(JSON.parse(line)); } catch { return `invalid event: ${oneLine(line)}`; } });
 }
 
-export async function callTool(name, rawArguments, { env = process.env, dataDir, start = startAsk, apiOptions = {} } = {}) {
+export async function callTool(name, rawArguments, { env = process.env, dataDir, start = startAsk, apiOptions = {}, menuOptions = {} } = {}) {
   const args = rawArguments === undefined ? {} : requireObject(rawArguments, "arguments");
   dataDir ??= await resolveDataDir({ env });
   const tool = TOOLS.find(tool => tool.name === name);
@@ -250,17 +250,7 @@ export async function callTool(name, rawArguments, { env = process.env, dataDir,
   requireOnlyKeys(args, Object.keys(tool.inputSchema.properties));
   if (name === "fleet_ask") return { value: await start(args, { env, dataDir }), json: true };
   if (name === "fleet_accounts") {
-    const { repo, toolkit } = await loadToolkit({ env });
-    const api = await import(pathToFileURL(path.join(repo, "lib", "api.mjs")).href);
-    const [value, history] = await Promise.all([
-      Promise.all(["codex", "agy", "dsh", "grok"].map(name => toolkit.signInStatus(name, { env }))),
-      listRuns(dataDir, { backend: "api", limit: Number.MAX_SAFE_INTEGER }),
-    ]);
-    const accounts = await Promise.all(api.providers({ env }).map(async service => ({
-      ...await api.accountStatus(service, { ...apiOptions, env }),
-      spendUsd: history.runs.filter(run => run.provider === service.name).reduce((sum, run) => sum + (run.costUsd ?? 0), 0),
-    })));
-    return { value: [...value, ...accounts], json: true };
+    return { value: await accounts({ ...menuOptions, ...args, env, dataDir, apiOptions }), json: true };
   }
   if (name === "fleet_runs") return { value: await listRuns(dataDir, args), json: true };
   const directory = runDirectory(dataDir, requireString(args.runId, "runId"));
@@ -286,7 +276,7 @@ export async function callTool(name, rawArguments, { env = process.env, dataDir,
     const source = await transcriptSource(directory, run, { env });
     const tail = source.format === "text" ? await readTail(path.join(directory, "answer.txt"), 2000) : "";
     const beats = source.format === "text" ? (tail ? [oneLine(tail)] : []) : await eventBeats(source.file, 10);
-    return { value: { runId: run.runId, backend: run.backend, model: run.model, status: run.status, elapsedSeconds: Math.max(0, Math.floor((Date.parse(run.endedAt ?? new Date().toISOString()) - Date.parse(run.startedAt)) / 1000)), beats: beats.slice(-10) }, json: true };
+    return { value: { runId: run.runId, backend: run.backend, model: run.model, status: run.status, ...(run.notice ? { notice: run.notice } : {}), elapsedSeconds: Math.max(0, Math.floor((Date.parse(run.endedAt ?? new Date().toISOString()) - Date.parse(run.startedAt)) / 1000)), beats: beats.slice(-10) }, json: true };
   }
   if (name === "fleet_transcript") {
     if (kind === "batch") return { value: await fleetTranscript(dataDir, directory, requireString(args.taskId, "taskId")), json: false };
@@ -322,7 +312,7 @@ async function handleMessage(message) {
     result(message.id, {
       protocolVersion: message.params?.protocolVersion ?? DEFAULT_PROTOCOL_VERSION,
       capabilities: { tools: {} },
-      serverInfo: { name: "fleet", version: "0.8.0" },
+      serverInfo: { name: "fleet", version: "0.9.0" },
     });
     return;
   }

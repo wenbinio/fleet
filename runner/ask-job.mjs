@@ -21,7 +21,7 @@ export function killTree(child) {
     try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
   }
 }
-export async function runAskJob(directory, { env = process.env, spawnBackend = spawn, stopTree = killTree, pollMs = 1000, handoff = false } = {}) {
+export async function runAskJob(directory, { env = process.env, spawnBackend = spawn, stopTree = killTree, pollMs = 1000, handoff = false, platform = process.platform } = {}) {
   const file = path.join(directory, "run.json");
   let run = readJson(file), child, timer, interrupted = false;
   let stdout = Buffer.alloc(0), stderr = Buffer.alloc(0), answer = "", outputFd, jsonOutput = "";
@@ -37,35 +37,51 @@ export async function runAskJob(directory, { env = process.env, spawnBackend = s
       run = readJson(file);
     }
     const { repo, toolkit } = await loadToolkit({ env });
-    const { exe, args } = backendCommand(run, directory, repo);
+    const context = { run, directory, repo, toolkit, env, state, platform };
+    await adapter.before?.(context);
+    const command = adapter.command(run, context);
+    const commands = Array.isArray(command) ? command : [command];
     if (adapter.outputFile) outputFd = fs.openSync(path.join(directory, adapter.outputFile), "w");
-    let pending = "";
     const line = text => adapter.line?.(text, state, run);
-    if (fs.existsSync(path.join(directory, "interrupt.flag"))) {
-      interrupted = true;
-      throw new Error("interrupted");
+    const stderrLine = text => {
+      const change = adapter.stderrLine?.(text, state, run);
+      if (change) { run = { ...run, ...change }; if (!run.notice) delete run.notice; atomicJson(file, run); }
+    };
+    let exitCode = 1;
+    for (const { exe, args } of commands) {
+      let pending = "", pendingError = "";
+      if (fs.existsSync(path.join(directory, "interrupt.flag"))) { interrupted = true; break; }
+      child = spawnBackend(exe, args, { cwd: run.cwd ?? directory, env: { ...env, AGENT_TOOLKIT_CAPTURE_ATTACHED: "1" }, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+      child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
+      child.stdout.on("data", chunk => {
+        stdout = append(stdout, chunk);
+        if (outputFd !== undefined) fs.writeSync(outputFd, chunk);
+        if (adapter.json) jsonOutput += chunk;
+        if (adapter.line) {
+          pending += chunk;
+          let index;
+          while ((index = pending.indexOf("\n")) !== -1) { line(pending.slice(0, index).replace(/\r$/, "")); pending = pending.slice(index + 1); }
+        }
+      });
+      child.stderr.on("data", chunk => {
+        stderr = append(stderr, chunk);
+        if (adapter.stderrLine) {
+          pendingError += chunk;
+          let index;
+          while ((index = pendingError.indexOf("\n")) !== -1) { stderrLine(pendingError.slice(0, index).replace(/\r$/, "")); pendingError = pendingError.slice(index + 1); }
+        }
+      });
+      timer = setInterval(() => {
+        if (!interrupted && fs.existsSync(path.join(directory, "interrupt.flag"))) { interrupted = true; stopTree(child); }
+      }, pollMs);
+      exitCode = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", code => resolve(code ?? 1)); });
+      if (pending) line(pending);
+      if (pendingError) stderrLine(pendingError);
+      clearInterval(timer);
+      if (interrupted || exitCode !== 0) break;
     }
-    child = spawnBackend(exe, args, { cwd: run.cwd ?? directory, env: { ...env, AGENT_TOOLKIT_CAPTURE_ATTACHED: "1" }, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
-    child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
-    child.stdout.on("data", chunk => {
-      stdout = append(stdout, chunk);
-      if (outputFd !== undefined) fs.writeSync(outputFd, chunk);
-      if (adapter.json) jsonOutput += chunk;
-      if (adapter.line) {
-        pending += chunk;
-        let index;
-        while ((index = pending.indexOf("\n")) !== -1) { line(pending.slice(0, index).replace(/\r$/, "")); pending = pending.slice(index + 1); }
-      }
-    });
-    child.stderr.on("data", chunk => { stderr = append(stderr, chunk); });
-    timer = setInterval(() => {
-      if (!interrupted && fs.existsSync(path.join(directory, "interrupt.flag"))) { interrupted = true; stopTree(child); }
-    }, pollMs);
-    const exitCode = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", code => resolve(code ?? 1)); });
-    if (pending) line(pending);
-    clearInterval(timer);
     if (outputFd !== undefined) { fs.closeSync(outputFd); outputFd = undefined; }
-    const parsed = adapter.parse({ run, directory, toolkit, env, exitCode, interrupted, state, stdout: adapter.json ? jsonOutput : stdout.toString("utf8"), stderr: stderr.toString("utf8") });
+    const parsed = await adapter.parse({ run, directory, toolkit, env, exitCode, interrupted, state, stdout: adapter.json ? jsonOutput : stdout.toString("utf8"), stderr: stderr.toString("utf8") });
     answer = typeof parsed.answer === "string" ? parsed.answer : "";
     fs.writeFileSync(path.join(directory, "answer.txt"), answer);
     if (parsed.reasoning !== undefined) fs.writeFileSync(path.join(directory, "reasoning.txt"), parsed.reasoning);
@@ -77,6 +93,7 @@ export async function runAskJob(directory, { env = process.env, spawnBackend = s
     run = { ...run, status: interrupted ? "interrupted" : "failed", exitCode: 1, error: (stderr.toString("utf8") || error.message).slice(0, 2000) };
   } finally {
     clearInterval(timer);
+    delete run.notice;
     if (outputFd !== undefined) fs.closeSync(outputFd);
     fs.writeFileSync(path.join(directory, "stdout.txt"), stdout);
     fs.writeFileSync(path.join(directory, "stderr.txt"), stderr);

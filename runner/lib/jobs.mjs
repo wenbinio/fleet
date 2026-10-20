@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { resolveDataDir } from "./data-dir.mjs";
-import { ADAPTERS, BACKENDS, ASK_KEYS, TERMINAL_STATUSES } from "./adapters.mjs";
+import { ADAPTERS, BACKENDS, ASK_KEYS, TERMINAL_STATUSES, LIVE_STATUSES } from "./adapters.mjs";
 export { BACKENDS, ASK_KEYS, TERMINAL_STATUSES } from "./adapters.mjs";
 import { toolkitRepo } from "./toolkit-link.mjs";
 
@@ -35,7 +35,7 @@ export function runDirectory(dataDir, runId) {
   return resolved;
 }
 export function liveStatus(run, kill = process.kill) {
-  if (run.status === "running" && Number.isInteger(run.pid) && run.pid > 0) {
+  if (LIVE_STATUSES.has(run.status) && Number.isInteger(run.pid) && run.pid > 0) {
     try { kill(run.pid, 0); } catch (error) { if (error.code === "ESRCH") return { ...run, status: "lost" }; }
   }
   return run;
@@ -72,6 +72,15 @@ export function validateAsk(opts) {
   if (opts.addDirs !== undefined) {
     if (!Array.isArray(opts.addDirs)) throw new Error("addDirs must be an array");
     for (const dir of opts.addDirs) absoluteDirectory(dir, "addDirs");
+  }
+  if (opts.outDir !== undefined) absoluteDirectory(opts.outDir, "outDir");
+  for (const key of ["images", "files"]) {
+    if (opts[key] === undefined) continue;
+    if (!Array.isArray(opts[key])) throw new Error(`${key} must be an array`);
+    for (const file of opts[key]) {
+      nonempty(file, key);
+      if (!path.isAbsolute(file) || !fs.existsSync(file) || (key === "images" && !fs.statSync(file).isFile())) throw new Error(`${key} must contain absolute existing paths`);
+    }
   }
   if (opts.readOnly !== undefined && typeof opts.readOnly !== "boolean") throw new Error("readOnly must be a boolean");
   for (const key of ["resume", "jsonSchema", "model", "effort", "provider", "system"]) if (opts[key] !== undefined) nonempty(opts[key], key);
@@ -111,7 +120,7 @@ export async function startAsk(opts, { env = process.env, dataDir, spawnJob = sp
     const existing = fs.readdirSync(root, { withFileTypes: true }).filter(e => e.isDirectory()).flatMap(e => {
       try { return [readAsk(runDirectory(dataDir, e.name))]; } catch { return []; }
     });
-    if (adapter.maxLive && existing.filter(r => r.backend === opts.backend && r.status === "running").length >= adapter.maxLive) throw new Error(`${opts.backend} runs ${adapter.maxLive} jobs at once; wait for one`);
+    if (adapter.maxLive && existing.filter(r => r.backend === opts.backend && LIVE_STATUSES.has(r.status)).length >= adapter.maxLive) throw new Error(`${opts.backend} runs ${adapter.maxLive} jobs at once; wait for one`);
     let resumed;
     if (opts.resume) {
       resumed = readAsk(runDirectory(dataDir, opts.resume));
@@ -183,19 +192,20 @@ export async function transcriptSource(directory, run, { env = process.env } = {
   return ADAPTERS[run.backend].transcript(run, { directory, env });
 }
 export async function eventsFile(directory, run, options) { return (await transcriptSource(directory, run, options)).file ?? null; }
-export async function waitRuns(ids, { dataDir, env = process.env, timeout, pollMs = 2000 } = {}) {
+export async function waitRuns(ids, { dataDir, env = process.env, timeout, pollMs = 2000, warn = line => console.error(line) } = {}) {
   if (!ids.length) throw new Error("wait needs at least one runId");
   if (timeout !== undefined && (!Number.isFinite(timeout) || timeout < 0)) throw new Error("timeout must be non-negative seconds");
   dataDir ??= await resolveDataDir({ env });
-  const directories = ids.map(id => runDirectory(dataDir, id)), start = Date.now();
+  const directories = ids.map(id => runDirectory(dataDir, id)), start = Date.now(), notified = new Set();
   for (;;) {
     const rows = directories.map(directory => {
       const kind = kindOf(directory);
       const run = kind === "ask" ? readAsk(directory) : readJson(path.join(directory, kind === "delegate" ? "state.json" : "results.json"));
-      return { runId: run.runId ?? path.basename(directory), backend: run.backend ?? "codex", model: run.model ?? null, status: run.status ?? (run.complete ? "done" : "running"), durationMs: run.durationMs ?? (run.startedAt ? Date.now() - Date.parse(run.startedAt) : null), answer: answerOf(directory, 6000, true) };
+      return { runId: run.runId ?? path.basename(directory), backend: run.backend ?? "codex", model: run.model ?? null, status: run.status ?? (run.complete ? "done" : "running"), ...(run.notice ? { notice: run.notice } : {}), ...(run.files ? { files: run.files } : {}), durationMs: run.durationMs ?? (run.startedAt ? Date.now() - Date.parse(run.startedAt) : null), answer: answerOf(directory, 6000, true) };
     });
+    for (const row of rows) if (row.status === "waiting_for_lok" && !notified.has(row.runId)) { notified.add(row.runId); warn(`${row.runId}: ${row.notice}`); }
     if (rows.every(r => TERMINAL_STATUSES.has(r.status))) return rows;
-    if (timeout !== undefined && Date.now() - start >= timeout * 1000) return rows.map(r => ["running", "awaiting-steer"].includes(r.status) ? { ...r, error: "wait timeout" } : r);
+    if (timeout !== undefined && Date.now() - start >= timeout * 1000) return rows.map(r => LIVE_STATUSES.has(r.status) || r.status === "awaiting-steer" ? { ...r, error: "wait timeout" } : r);
     await delay(Math.min(pollMs, timeout === undefined ? pollMs : Math.max(1, timeout * 1000 - (Date.now() - start))));
   }
 }

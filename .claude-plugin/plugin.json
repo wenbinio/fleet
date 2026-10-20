@@ -1,7 +1,7 @@
 {
   "name": "fleet",
-  "version": "0.8.0",
-  "description": "Codex, agy, DeepSeek, Grok and API jobs with shared history, cost controls and guarded integration.",
+  "version": "0.9.0",
+  "description": "Text, image, advisor and local sound jobs with one model menu, shared history and guarded integration.",
   "author": {
     "name": "wenbinio"
   }

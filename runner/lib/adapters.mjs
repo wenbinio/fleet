@@ -18,10 +18,42 @@ const jsonResult = stdout => {
   if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("invalid runner result");
   return data;
 };
+export const LIVE_STATUSES = new Set(["running", "waiting_for_lok"]);
+export const ADVISOR_NOTICE = "A Google check is waiting in a Chrome window for Lok";
+function artifactFiles(root, accept) {
+  const files = [];
+  if (!fs.existsSync(root)) return files;
+  const walk = directory => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      // Do not follow links out of the run's artifact tree.
+      if (entry.isDirectory()) walk(file);
+      else if (entry.isFile() && accept(file)) files.push({ path: file, bytes: fs.statSync(file).size });
+    }
+  };
+  walk(root);
+  return files.sort((a, b) => a.path.localeCompare(b.path));
+}
+function copyArtifacts(files, root, outDir) {
+  const result = [...files];
+  if (!outDir) return result;
+  for (const file of files) {
+    const destination = path.join(outDir, path.relative(root, file.path));
+    if (path.resolve(destination) === path.resolve(file.path)) continue;
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    // An existing asset in the chosen output directory must not be overwritten.
+    fs.copyFileSync(file.path, destination, fs.constants.COPYFILE_EXCL);
+    result.push({ path: destination, bytes: fs.statSync(destination).size });
+  }
+  return result;
+}
+const imageFile = file => /\.(png|webp|jpe?g)$/i.test(file);
+const readText = file => { try { return fs.readFileSync(file, "utf8"); } catch (error) { if (error.code === "ENOENT") return ""; throw error; } };
+const artifactTranscript = (run, context) => ({ ...textTranscript(run, context), details: { files: run.files ?? [] } });
 function sessionResume(opts, resumed, existing, backend, field) {
   if (!opts.resume) return;
   if (resumed?.kind !== "ask" || resumed.backend !== backend || !resumed[field]) throw new Error(`resume must name an earlier ${backend} ask run with a saved session`);
-  if (existing.some(r => r.backend === backend && r[field] === resumed[field] && r.status === "running")) throw new Error(`that ${backend === "codex" ? "Codex" : backend} session is still running; wait before resuming`);
+  if (existing.some(r => r.backend === backend && r[field] === resumed[field] && LIVE_STATUSES.has(r.status))) throw new Error(`that ${backend === "codex" ? "Codex" : backend} session is still running; wait before resuming`);
 }
 
 // All backend-specific defaults, option rules, invocation, parsing and transcript
@@ -122,6 +154,69 @@ export const ADAPTERS = {
     transcript: (run, context) => ({ ...textTranscript(run, context), reasoning: true, details: { requestedModel: run.requestedModel, model: run.model, provider: run.provider, free: run.free, usage: run.usage, costUsd: run.costUsd } }),
     row: run => ({ requestedModel: run.requestedModel, provider: run.provider, free: run.free, costUsd: run.costUsd ?? 0 }),
     spend: run => Number.isFinite(run.costUsd) && run.costUsd > 0 ? run.costUsd : 0,
+  },
+  image: {
+    defaults: { model: "sol", effort: "high" }, allowed: ["model", "effort", "images", "outDir"], maxLive: 2,
+    validate(opts) { if (opts.effort !== undefined && !["low", "medium", "high", "xhigh"].includes(opts.effort)) throw new Error("invalid effort"); },
+    before({ directory, state }) { state.beforeFiles = new Set(artifactFiles(directory, imageFile).map(file => file.path)); },
+    command: (run, { directory, repo }) => ({ exe: process.execPath, args: [path.join(repo, "lib", "runners.mjs"), "codex-image", directory, ...(run.images ?? []), "--model", run.model, "--effort", run.effort] }),
+    parse({ directory, run, state, exitCode, interrupted }) {
+      const produced = artifactFiles(directory, imageFile).filter(file => !state.beforeFiles.has(file.path));
+      const files = !exitCode && !interrupted ? copyArtifacts(produced, directory, run.outDir) : produced;
+      return { answer: readText(path.join(directory, "log.txt")).slice(-3000), metadata: { files }, status: !exitCode && produced.length ? "done" : "failed", ...(!produced.length ? { error: "no images produced" } : {}) };
+    },
+    transcript: artifactTranscript,
+  },
+  advisor: {
+    defaults: { model: "argon" }, allowed: ["files", "lokAsked"], maxLive: 2,
+    validate(opts) { if (opts.lokAsked !== true) throw new Error("advisor runs only when Lok asks for Argon"); },
+    command: (run, { directory, repo }) => ({ exe: process.execPath, args: [path.join(repo, "skills", "gemini-advisor", "advisor.mjs"), "ask", prompt(directory), ...(run.files?.length ? ["--files", ...run.files] : []), "--out", path.join(directory, "answer.md")] }),
+    stderrLine(line) {
+      const start = line.indexOf("{");
+      if (start < 0) return;
+      let event; try { event = JSON.parse(line.slice(start)); } catch { return; }
+      if (Object.hasOwn(event, "waitingForLok") && event.waitingForLok) return { status: "waiting_for_lok", notice: ADVISOR_NOTICE };
+      if (event.challenge === "cleared") return { status: "running", notice: undefined };
+    },
+    parse: ({ directory }) => ({ answer: readText(path.join(directory, "answer.md")) }),
+    transcript: textTranscript,
+  },
+  sound: {
+    defaults: { engine: "sao", takes: 1, music: false }, allowed: ["engine", "seconds", "takes", "seed", "music", "outDir"], maxLive: 1,
+    validate(opts) {
+      if (opts.engine !== undefined && !["sao", "moss"].includes(opts.engine)) throw new Error("engine must be sao or moss");
+      if (typeof opts.seconds !== "number" || !Number.isFinite(opts.seconds) || opts.seconds < 0.5 || opts.seconds > 47) throw new Error("seconds must be between 0.5 and 47");
+      if (opts.takes !== undefined && (!Number.isInteger(opts.takes) || opts.takes < 1 || opts.takes > 5)) throw new Error("takes must be between 1 and 5");
+      if (opts.seed !== undefined && !Number.isSafeInteger(opts.seed)) throw new Error("seed must be an integer");
+      if (opts.music !== undefined && typeof opts.music !== "boolean") throw new Error("music must be a boolean");
+      if (opts.engine === "moss" && opts.music) throw new Error("moss does not support music");
+    },
+    prepare: opts => ({ model: opts.engine ?? "sao" }),
+    async before({ run, directory, repo, toolkit, env, state, platform }) {
+      const media = await import(pathToFileURL(path.join(repo, "lib", "media.mjs")).href);
+      state.tools = media.soundTools(toolkit.loadConfig(env), { platform });
+      if (!state.tools[run.engine]) throw new Error(`${run.engine} sound tools are missing; run node setup.mjs`);
+      state.cues = Array.from({ length: run.takes }, (_, i) => ({ key: `take-${i + 1}`, prompt: readText(prompt(directory)), seconds: run.seconds, seed: (run.seed ?? 1) + i, steps: 100, music: run.music }));
+      fs.writeFileSync(path.join(directory, "cues.json"), JSON.stringify(state.cues, null, 2) + "\n");
+    },
+    command(run, { directory, state }) {
+      const { tools, cues } = state, raw = path.join(directory, "raw"), norm = path.join(directory, "norm"), web = path.join(directory, "web"), cueFile = path.join(directory, "cues.json");
+      return run.engine === "moss" ? [
+        { exe: tools.mossPython, args: [tools.mossGen, cueFile, raw] },
+        { exe: tools.mossPython, args: [tools.peakNorm, raw, norm] },
+        { exe: tools.saoPython, args: [tools.finish, norm, web] },
+      ] : [
+        { exe: tools.saoPython, args: [tools.gen, cueFile, raw] },
+        { exe: tools.saoPython, args: [tools.finish, raw, web, ...(run.music ? ["--music", cues.map(cue => cue.key).join(",")] : [])] },
+      ];
+    },
+    parse({ run, directory, exitCode, interrupted }) {
+      const web = path.join(directory, "web"), produced = artifactFiles(web, file => /\.(ogg|m4a)$/i.test(file) || path.basename(file) === "sounds.json");
+      const hasAudio = produced.some(file => /\.(ogg|m4a)$/i.test(file.path));
+      const files = !exitCode && !interrupted && hasAudio ? copyArtifacts(produced, web, run.outDir) : produced;
+      return { answer: files.map(file => file.path).join("\n"), metadata: { files }, status: !exitCode && hasAudio ? "done" : "failed", ...(!hasAudio ? { error: "no output files produced" } : {}) };
+    },
+    transcript: artifactTranscript,
   },
 };
 export const BACKENDS = Object.keys(ADAPTERS);
