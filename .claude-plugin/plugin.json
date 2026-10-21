@@ -1,6 +1,6 @@
 {
   "name": "fleet",
-  "version": "0.14.1",
+  "version": "0.15.0",
   "description": "Text, image, advisor and local sound jobs with one model menu, shared history and guarded integration.",
   "author": {
     "name": "wenbinio"
