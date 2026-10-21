@@ -5,6 +5,7 @@ import { loadToolkit } from "./runtime.mjs";
 import { supportsEffort } from "../../core/lib/effort.mjs";
 import { loadConfig } from "../../core/lib/toolkit.mjs";
 import { localProvider } from "../../core/lib/local.mjs";
+import { IMAGE_OPTIONS, validateImageOptions } from "../../core/lib/image-api.mjs";
 
 export function finalText(event) {
   const value = event.text ?? event.content ?? (typeof event.message === "string" ? event.message : event.message?.content) ?? (typeof event.data === "string" ? event.data : event.data?.text ?? event.data?.content) ?? event.output ?? event.answer ?? event.result;
@@ -170,15 +171,36 @@ export const ADAPTERS = {
     spend: run => Number.isFinite(run.costUsd) && run.costUsd > 0 ? run.costUsd : 0,
   },
   image: {
-    defaults: { model: "sol", effort: "high" }, allowed: ["model", "images", "outDir"], maxLive: 2,
-    before({ directory, state }) { state.beforeFiles = new Set(artifactFiles(directory, imageFile).map(file => file.path)); },
-    command: (run, { directory, repo }) => ({ exe: process.execPath, args: [path.join(repo, "lib", "runners.mjs"), "codex-image", directory, ...(run.images ?? []), "--model", run.model, "--effort", run.effort] }),
-    parse({ directory, run, state, exitCode, interrupted }) {
+    defaults: { model: "sol", effort: "high" }, allowed: ["model", "images", "outDir", "provider", "maxCostUsd", ...IMAGE_OPTIONS], maxLive: 2,
+    validate(opts) {
+      if (opts.provider === 'openrouter') validateImageOptions(opts);
+      else {
+        if (opts.provider !== undefined) throw new Error('image provider must be openrouter, or omitted for Codex');
+        for (const key of ['maxCostUsd', ...IMAGE_OPTIONS]) if (opts[key] !== undefined) throw new Error(`${key} requires image provider openrouter`);
+      }
+    },
+    prepare: opts => opts.provider === 'openrouter' ? { effort: undefined, n: opts.n ?? 1 } : undefined,
+    before({ directory, state, run }) { if (run.provider !== 'openrouter') state.beforeFiles = new Set(artifactFiles(directory, imageFile).map(file => file.path)); },
+    command(run, { directory, repo }) {
+      if (run.provider === 'openrouter') return runner(repo, 'image-api', [prompt(directory), '--model', run.model, '--max-cost', String(run.maxCostUsd),
+        ...IMAGE_OPTIONS.filter(key => run[key] !== undefined).flatMap(key => [`--${key.replaceAll('_', '-')}`, String(run[key])]), ...(run.images ?? []).flatMap(file => ['--image', file]), ...(run.outDir ? ['--out-dir', run.outDir] : [])]);
+      return { exe: process.execPath, args: [path.join(repo, "lib", "runners.mjs"), "codex-image", directory, ...(run.images ?? []), "--model", run.model, "--effort", run.effort] };
+    },
+    parse({ directory, run, state, exitCode, interrupted, stdout }) {
+      if (run.provider === 'openrouter') {
+        if (!stdout.trim()) return { answer: '', status: 'failed', error: 'image runner returned no result' };
+        const data = jsonResult(stdout);
+        if (!['done', 'failed', 'denied', 'limit', 'rate_limited'].includes(data.outcome)) throw new Error('invalid image outcome');
+        const metadata = Object.fromEntries(['files', 'costUsd', 'estimateUsd', 'estimate', 'overCap', 'model', 'providerSlug', 'n'].filter(key => data[key] !== undefined).map(key => [key, data[key]]));
+        return { answer: JSON.stringify({ files: data.files ?? [] }), metadata, status: data.outcome === 'done' && exitCode !== 0 ? 'failed' : data.outcome, error: data.error };
+      }
       const produced = artifactFiles(directory, imageFile).filter(file => !state.beforeFiles.has(file.path));
       const files = !exitCode && !interrupted ? copyArtifacts(produced, directory, run.outDir) : produced;
       return { answer: imageAnswer(readText(path.join(directory, "log.txt"))), metadata: { files }, status: !exitCode && produced.length ? "done" : "failed", ...(!produced.length ? { error: "no images produced" } : {}) };
     },
     transcript: artifactTranscript,
+    row: run => run.provider === 'openrouter' ? { provider: run.provider, providerSlug: run.providerSlug, costUsd: run.costUsd ?? 0, estimateUsd: run.estimateUsd } : {},
+    spend: run => run.provider === 'openrouter' ? ADAPTERS.api.spend(run) : 0,
   },
   advisor: {
     defaults: { model: "argon", effort: "high" }, allowed: ["files", "lokAsked"], maxLive: 2,

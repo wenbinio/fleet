@@ -40,7 +40,7 @@ fleet wait RUNID...; runs; run RUNID; accounts`); return 0; }
     result = await startOperation(command.replace("-", "_"), opts, { ...operationOptions, env, dataDir });
   } else if (command === "ask") {
     const opts = {};
-    const names = { backend: "backend", prompt: "prompt", "prompt-file": "promptFile", cwd: "cwd", model: "model", timeout: "timeout", effort: "effort", "add-dir": "addDirs", "json-schema": "jsonSchema", resume: "resume", provider: "provider", "max-tokens": "maxTokens", "max-cost": "maxCostUsd", system: "system", image: "images", file: "files", "out-dir": "outDir", engine: "engine", seconds: "seconds", takes: "takes", seed: "seed" };
+    const names = { backend: "backend", prompt: "prompt", "prompt-file": "promptFile", cwd: "cwd", model: "model", timeout: "timeout", effort: "effort", "add-dir": "addDirs", "json-schema": "jsonSchema", resume: "resume", provider: "provider", n: "n", resolution: "resolution", "aspect-ratio": "aspect_ratio", size: "size", quality: "quality", "output-format": "output_format", background: "background", "max-tokens": "maxTokens", "max-cost": "maxCostUsd", system: "system", image: "images", file: "files", "out-dir": "outDir", engine: "engine", seconds: "seconds", takes: "takes", seed: "seed" };
     for (let i = 0; i < args.length; i++) {
       if (args[i] === "--read-only") { opts.readOnly = true; continue; }
       if (args[i] === "--no-preamble") { opts.noPreamble = true; continue; }
@@ -52,7 +52,7 @@ fleet wait RUNID...; runs; run RUNID; accounts`); return 0; }
       const value = args[++i];
       if (["addDirs", "images", "files"].includes(name)) (opts[name] ??= []).push(value);
       else if (opts[name] !== undefined) throw new Error(`duplicate option: ${args[i - 1]}`);
-      else opts[name] = ["maxTokens", "maxCostUsd", "seconds", "takes", "seed", "timeout"].includes(name) ? Number(value) : value;
+      else opts[name] = ["maxTokens", "maxCostUsd", "seconds", "takes", "seed", "timeout", "n"].includes(name) ? Number(value) : value;
     }
     assertEnabled(opts.backend, { env });
     result = await start(opts, { env, dataDir });

@@ -6,6 +6,7 @@ import * as api from './api.mjs';
 import { effortValues, validateEffort } from './effort.mjs';
 import { localProvider, ensureLocalReady } from './local.mjs';
 import { quotaLimited } from './quota.mjs';
+import { generateImages, IMAGE_OPTIONS } from './image-api.mjs';
 
 export const aliases = { astra: 'gpt-6-astra', sol: 'gpt-6.1-sol', luna: 'gpt-6-luna' };
 const effortValue = value => validateEffort('codex', value);
@@ -189,6 +190,16 @@ export async function apiRun(argv, { env = process.env, stdout = text => process
   if (result.error) stderr(result.error + '\n');
   return { done: 0, failed: 1, denied: 3, empty: 4, limit: 4, rate_limited: 5, daily_limit: 5 }[result.outcome] ?? 1;
 }
+export async function imageApiRun(argv, { env = process.env, stdout = text => process.stdout.write(text), ...options } = {}) {
+  const opts = CLI('image-api-run PROMPT --model ID --max-cost USD [--n N] [--resolution 1K] [--image FILE] [--out-dir DIR]', argv,
+    { values: ['model', 'max-cost', 'n', 'resolution', 'aspect-ratio', 'size', 'quality', 'output-format', 'background', 'seed', 'out-dir'], repeat: ['image'] });
+  if (!opts) return 0;
+  if (opts._.length !== 1) throw new Error('Provide one prompt file');
+  const file = path.resolve(opts._[0]), values = Object.fromEntries(IMAGE_OPTIONS.filter(key => opts[key.replaceAll('_', '-')] !== undefined).map(key => [key, ['n', 'seed'].includes(key) ? Number(opts[key]) : opts[key.replaceAll('_', '-')]]));
+  const result = await generateImages(api.provider('openrouter', { env }), { ...values, model: opts.model, maxCostUsd: opts['max-cost'] === undefined ? undefined : Number(opts['max-cost']), prompt: fs.readFileSync(file, 'utf8'), images: opts.image, outDir: opts['out-dir'] }, path.dirname(file), { ...options, env });
+  stdout(JSON.stringify(result) + '\n');
+  return { done: 0, failed: 1, denied: 3, limit: 4, rate_limited: 5 }[result.outcome] ?? 1;
+}
 export async function agyFan(argv) {
   const opts = CLI('agy-fan <prompt-file> (--target MODEL... | --n N [--model M]) [--max 4] [--timeout 600] [--add-dir D] [--json-schema S] [--no-preamble]', argv,
     { values: ['n', 'model', 'max', 'timeout', 'json-schema'], repeat: ['target', 'add-dir'], booleans: ['no-preamble'] });
@@ -211,7 +222,7 @@ export async function agyFan(argv) {
   return failed ? 1 : 0;
 }
 export async function main() {
-  try { const command = process.argv[2], fn = { 'codex-run': codexRun, 'codex-image': codexImage, 'agy-run': agyRun, 'agy-fan': agyFan, 'grok-run': grokRun, 'api-run': apiRun }[command]; if (!fn) throw new Error(`Unknown runner: ${command}`); process.exitCode = await fn(process.argv.slice(3)); }
+  try { const command = process.argv[2], fn = { 'codex-run': codexRun, 'codex-image': codexImage, 'agy-run': agyRun, 'agy-fan': agyFan, 'grok-run': grokRun, 'api-run': apiRun, 'image-api-run': imageApiRun }[command]; if (!fn) throw new Error(`Unknown runner: ${command}`); process.exitCode = await fn(process.argv.slice(3)); }
   catch (e) { console.error(e.message); process.exitCode = 1; }
 }
 

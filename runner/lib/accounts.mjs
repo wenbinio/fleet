@@ -9,6 +9,7 @@ import { atomicJson, listRuns } from "./jobs.mjs";
 import { BACKENDS } from "./adapters.mjs";
 import { effortNote } from "../../core/lib/effort.mjs";
 import { localStatus } from "../../core/lib/local.mjs";
+import { imageModels } from "../../core/lib/image-api.mjs";
 
 const TTL = 10 * 60 * 1000;
 const models = (ids, cost, access) => ids.map(id => ({ id, cost, access }));
@@ -53,6 +54,7 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
   const { repo, toolkit } = await loadToolkit({ env });
   const [api, media, runners, webchat] = await Promise.all(["api", "media", "runners", "webchat/state"].map(name => import(pathToFileURL(path.join(repo, "lib", `${name}.mjs`)).href)));
   const config = toolkit.loadConfig(env), services = enabled.includes("api") ? api.providers({ env }).filter(service => !service.local) : [];
+  const imageService = enabled.includes('image') && config.providers?.some(service => service.name === 'openrouter') ? api.provider('openrouter', { env, config }) : null;
   const local = enabled.includes("local") ? await localStatus({ ...apiOptions, env, platform, config, probe: false }) : null;
   const sound = media.soundTools(config, { platform });
   const soundModels = () => models(["sao", "moss"].filter(engine => sound[engine]), "local", "sound");
@@ -60,7 +62,7 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
   const chatModels = () => models(chatState.models.length ? chatState.models : ["strongest"], "subscription", "text");
   const aliases = Object.entries(runners.aliases).filter(([id]) => ["astra", "sol", "luna"].includes(id));
   // Fingerprints invalidate stale installation/provider menus without storing config or credentials.
-  const fingerprint = createHash("sha256").update(JSON.stringify([6, enabled, repo, aliases, services.map(s => [s.name, s.baseUrl]), config.soundVenv, config.mossVenv, config.soundDir, config.mossTools])).digest("hex");
+  const fingerprint = createHash("sha256").update(JSON.stringify([7, enabled, repo, aliases, services.map(s => [s.name, s.baseUrl]), imageService?.baseUrl, config.soundVenv, config.mossVenv, config.soundDir, config.mossTools])).digest("hex");
   const cacheFile = path.join(dataDir, "model-menu.json");
   let cache;
   try { cache = JSON.parse(fs.readFileSync(cacheFile, "utf8")); } catch {}
@@ -92,6 +94,7 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
         return { backend: "api", provider: service.name, models: models(free.map(m => m.id), "free", "text"), notes: ["paid: any other model id by name, with maxCostUsd", `catalogue size: ${size ?? "unavailable"}`] };
       })),
       { backend: "image", models: [{ id: "sol", modelId: runners.aliases.sol, cost: "subscription", access: "image" }], notes: [] },
+      ...(imageService ? [{ backend: 'image', provider: 'openrouter', models: await imageModels(imageService, { ...apiOptions, env, now }).catch(() => []), notes: ['exact model id and maxCostUsd required; endpoint prices cached 24h'] }] : []),
       { backend: "advisor", models: models(["argon"], "subscription", "text"), notes: ["only when Lok asks"] },
       { backend: "chatgpt", models: chatModels(), notes: ["ChatGPT chat allowance; one prompt at a time, paced"] },
       { backend: "sound", models: soundModels(), notes: [] },
@@ -107,11 +110,13 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
     if (!statuses.has(name)) statuses.set(name, toolkit.signInStatus(name, { env }));
     return statuses.get(name);
   };
-  const history = selected.some(row => row.backend === "api") ? await listRuns(dataDir, { backend: "api", limit: Number.MAX_SAFE_INTEGER }) : null;
+  const history = selected.some(row => row.provider) ? await listRuns(dataDir, { limit: Number.MAX_SAFE_INTEGER }) : null;
   return Promise.all(selected.map(async row => {
     let status;
     if (row.backend === "local") status = local;
-    else if (["codex", "agy", "grok", "deepseek", "image"].includes(row.backend)) {
+    else if (row.backend === 'image' && row.provider === 'openrouter') {
+      status = { ...await api.accountStatus(imageService, { ...apiOptions, env }), spendUsd: history.runs.filter(run => run.provider === row.provider).reduce((sum, run) => sum + (run.costUsd ?? 0), 0) };
+    } else if (["codex", "agy", "grok", "deepseek", "image"].includes(row.backend)) {
       status = await signIn(row.backend === "deepseek" ? "dsh" : row.backend === "image" ? "codex" : row.backend);
     } else if (row.backend === "api") {
       const service = services.find(service => service.name === row.provider);
@@ -126,7 +131,7 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
     }
     // Derive effort notes after cache lookup so a cached catalog never freezes
     // backend option rules from an earlier release.
-    const note = effortNote(row.backend), notes = [...row.notes.filter(note => !note.startsWith("effort:")), ...(note ? [note] : [])];
+    const note = row.backend === 'image' && row.provider ? null : effortNote(row.backend), notes = [...row.notes.filter(note => !note.startsWith("effort:")), ...(note ? [note] : [])];
     return { ...status, backend: row.backend, ...(row.provider ? { provider: row.provider } : {}), models: row.backend === "local" ? models(local.models.map(model => model.id), "local", "text") : row.backend === "sound" ? soundModels() : row.backend === "chatgpt" ? chatModels() : row.models, notes };
   }));
 }

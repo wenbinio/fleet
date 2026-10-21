@@ -111,20 +111,20 @@ async function catalog(service, options = {}) {
   const file = path.join(toolkitHome(env), 'cache', `${service.name}-models.json`);
   try {
     const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (saved.baseUrl === service.baseUrl && Array.isArray(saved.models) && now - saved.savedAt >= 0 && now - saved.savedAt < 3_600_000) return saved.models;
+    if (saved.version === 2 && saved.baseUrl === service.baseUrl && Array.isArray(saved.models) && now - saved.savedAt >= 0 && now - saved.savedAt < 3_600_000) return saved.models;
   } catch { /* A missing or invalid cache is refreshed without credentials. */ }
   const response = await request(service, '/models', { ...options, key: undefined });
   if (!response.ok || response.data?.error) throw new ApiError(message(response), response.status);
   if (!Array.isArray(response.data?.data)) throw new Error('provider returned no model catalog');
   const models = response.data.data.filter(m => typeof m?.id === 'string').map(m => ({
     id: m.id, context_length: finite(m.context_length),
-    pricing: { prompt: finite(m.pricing?.prompt), completion: finite(m.pricing?.completion) },
+    pricing: Object.fromEntries(Object.entries(m.pricing ?? {}).map(([key, value]) => [key, finite(value)])),
     architecture: { output_modalities: Array.isArray(m.architecture?.output_modalities) ? m.architecture.output_modalities.filter(v => typeof v === 'string') : [] },
     max_completion_tokens: finite(m.top_provider?.max_completion_tokens),
   }));
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-  try { fs.writeFileSync(temporary, JSON.stringify({ baseUrl: service.baseUrl, savedAt: now, models }) + '\n'); fs.renameSync(temporary, file); }
+  try { fs.writeFileSync(temporary, JSON.stringify({ version: 2, baseUrl: service.baseUrl, savedAt: now, models }) + '\n'); fs.renameSync(temporary, file); }
   finally { fs.rmSync(temporary, { force: true }); }
   return models;
 }
@@ -153,7 +153,7 @@ function modelUnavailable(text) {
 export async function freeModels(service, options = {}) {
   if (service.name !== 'openrouter') return [];
   const models = await catalog(service, options), unusable = new Set(unusableModels(service, options).map(row => row.id));
-  return models.filter(m => !unusable.has(m.id) && m.id.endsWith(':free') && m.pricing.prompt === 0 && m.pricing.completion === 0 && m.architecture.output_modalities.includes('text') && !/guard|safety|moderation/i.test(m.id))
+  return models.filter(m => !unusable.has(m.id) && (m.id.endsWith(':free') || m.id === 'openrouter/free') && Object.keys(m.pricing).length > 0 && Object.values(m.pricing).every(value => value === 0) && m.architecture.output_modalities.includes('text') && !/guard|safety|moderation/i.test(m.id))
     .sort((a, b) => (b.context_length ?? 0) - (a.context_length ?? 0) || a.id.localeCompare(b.id));
 }
 export async function pickFree(n = 4, service, options = {}) {
@@ -199,7 +199,7 @@ export async function chat(service, opts, options = {}) {
     if (!rule.free && !service.local) {
       // A cap cannot be estimated without prices, even when maxTokens is supplied.
       const model = (await catalog(service, { ...options, redactKey: key })).find(m => m.id === rule.model);
-      if (!model || model.pricing.prompt === null || model.pricing.completion === null || model.pricing.prompt < 0 || model.pricing.completion < 0) return outcome('failed', { error: 'model pricing unavailable; this provider must publish prompt/completion pricing before a paid job can be capped' });
+      if (!model || !Number.isFinite(model.pricing.prompt) || !Number.isFinite(model.pricing.completion) || model.pricing.prompt < 0 || model.pricing.completion < 0) return outcome('failed', { error: 'model pricing unavailable; this provider must publish prompt/completion pricing before a paid job can be capped' });
       const promptTokens = Math.ceil((opts.prompt.length + (opts.system?.length ?? 0)) / 3);
       const remaining = opts.maxCostUsd - promptTokens * model.pricing.prompt;
       if (remaining < 0) return outcome('failed', { error: 'prompt alone exceeds maxCostUsd' });

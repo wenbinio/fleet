@@ -289,7 +289,7 @@ test("MCP exposes eight concise tools and routes each kind including accounts an
   await assert.rejects(callTool("fleet_steer", { runId: id, text: "continue" }, options), /fleet_ask with resume/);
   assert.equal((await callTool("fleet_interrupt", { runId: id }, options)).value.ok, true);
   assert.ok(fs.existsSync(path.join(directory, "interrupt.flag")));
-  assert.equal((await callTool("fleet_accounts", {}, { ...options, apiOptions: { keyReader: async () => null, fetch: async () => { throw new Error("fake unavailable catalog"); } } })).value.length, 10);
+  assert.equal((await callTool("fleet_accounts", {}, { ...options, apiOptions: { keyReader: async () => null, fetch: async () => { throw new Error("fake unavailable catalog"); } } })).value.length, 11);
   const delegate = path.join(f.dataDir, "runs", "delegate");
   write(path.join(delegate, "state.json"), '{"status":"awaiting-steer","turns":1}');
   write(path.join(delegate, "events.jsonl"), JSON.stringify({ type: "agentMessage", text: "old".repeat(100_000) }) + "\n" + Array.from({ length: 12 }, (_, i) => JSON.stringify({ type: "agentMessage", text: `beat-${i}` })).join("\n"));
@@ -646,7 +646,7 @@ test("model menu discovers ids, caches no account data, refreshes sign-in and so
     for (const key of ["backend", "found", "signedIn", "detail", "models", "notes"]) assert.ok(Object.hasOwn(row, key), `${row.backend}.${key}`);
     assert.ok(Array.isArray(row.models)); assert.ok(Array.isArray(row.notes));
     const note = effortNote(row.backend);
-    if (note) assert.ok(row.notes.includes(note), `${row.backend} effort note`);
+    if (note && !(row.backend === 'image' && row.provider === 'openrouter')) assert.ok(row.notes.includes(note), `${row.backend} effort note`);
     for (const model of row.models) {
       assert.ok(["subscription", "free", "paid", "local"].includes(model.cost));
       assert.ok(["edits", "read-only", "text", "image", "sound"].includes(model.access));
@@ -678,7 +678,7 @@ test("model menu discovers ids, caches no account data, refreshes sign-in and so
   assert.deepEqual(parseModelIds("Models: o1 o3 o4-mini"), ["o1", "o3", "o4-mini"]);
   await assert.rejects(accounts({ ...options, backend: "unknown" }), /invalid backend/);
   const mcp = await callTool("fleet_accounts", { backend: "image" }, { env: f.env, menuOptions: options, apiOptions: options.apiOptions });
-  assert.deepEqual(mcp.value.map(r => r.backend), ["image"]);
+  assert.deepEqual(mcp.value.map(r => [r.backend, r.provider]), [["image", undefined], ["image", "openrouter"]]);
   const printed = [];
   assert.equal(await cli(["accounts", "--backend", "advisor"], { env: f.env, menuOptions: options, apiOptions: options.apiOptions, print: text => printed.push(JSON.parse(text)) }), 0);
   assert.deepEqual(printed[0].map(r => r.backend), ["advisor"]);

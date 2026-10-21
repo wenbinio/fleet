@@ -80,6 +80,11 @@ fleet never imports the GGUF or downloads another copy.
 optionally reports Workers Builds checks. Both use fresh headless Chrome profiles over DevTools pipes and delete them
 after use. They never attach to an existing browser or deploy anything. See [usage and configuration](docs/recipes/review-local-shot.md).
 
+`image` uses Codex Sol by default. For paid OpenRouter images, set `provider: "openrouter"`, an exact model id
+and `maxCostUsd`; fleet checks endpoint prices first and saves decoded image artifacts and actual cost. The cap
+checks an estimate, not a guaranteed charge. `fleet_accounts` lists image prices after the Codex row.
+See [OpenRouter image options and examples](docs/recipes/openrouter.md#images).
+
 The existing Claude dispatch workflow follows.
 
 **Claude plans, reviews, and integrates; Codex writes the code — and nothing lands until an adversarial reviewer independently re-runs the tests and passes it.**

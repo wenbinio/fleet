@@ -18,6 +18,7 @@ export const ASK_JOB = fileURLToPath(new URL("../ask-job.mjs", import.meta.url))
 export const readJson = file => JSON.parse(fs.readFileSync(file, "utf8"));
 export function atomicJson(file, value) {
   const temporary = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   try {
     fs.writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
     fs.renameSync(temporary, file);

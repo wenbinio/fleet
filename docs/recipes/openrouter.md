@@ -1,4 +1,4 @@
-# OpenRouter (the `api` backend)
+# OpenRouter (text and image jobs)
 
 One OpenAI-compatible backend for text-only jobs: a prompt in, an answer out. No file access and no editing.
 Providers are entries in `~/.agent-toolkit/config.json` → `providers` (`name`, `kind: "openai"`, `baseUrl`,
@@ -31,6 +31,43 @@ Use `fleet_ask` with `backend: "api"`, or `bin/api-run`. Exit codes for `api-run
   the job names its exact id **and** sets `maxCostUsd`. Paid use needs a reason in the brief.
 - **No escalation:** a failed, empty or rate-limited free run never retries on a paid model.
 - Every run records `usage.cost`; `fleet_runs` shows total spend and `fleet_accounts` shows credit remaining.
+- The free picker requires a `:free` id (or the free router) and nonempty pricing with every field zero.
+  Image, audio, search and reasoning charges count too; empty or unknown pricing is never treated as free.
+
+## Images
+
+`image` still defaults to Codex Sol. Select `provider: "openrouter"` explicitly for the Images API. There are
+no free OpenRouter images: name an exact model, give a reason for paid use, and set `maxCostUsd`.
+
+```json
+{"backend":"image","provider":"openrouter","model":"qwen/qwen-image-3","prompt":"A quiet garden illustration for the approved cover","maxCostUsd":0.05,"resolution":"1K","n":1}
+```
+
+```bash
+node runner/fleet.mjs ask --backend image --provider openrouter --model recraft/recraft-v4.1-flash --prompt "Garden illustration for the approved cover" --max-cost 0.01
+node runner/fleet.mjs accounts --backend image
+```
+
+Optional fields are `n` (1–10, default 1), `resolution`, `aspect_ratio`, `size`, `quality`, `output_format`
+(`png`, `jpeg`, `webp`, `svg`), `background`, `seed`, `images` (up to 16 absolute reference file paths), and
+`outDir`. CLI uses hyphens (`--aspect-ratio`, `--output-format`, `--out-dir`) and repeatable `--image`.
+Only options supported by the model's first endpoint are accepted. Effort is a Codex image option only.
+
+Fleet estimates from the **first Images-API endpoint**, including reference charges, before submitting
+`POST /images`. It refuses missing prices, unsupported options and estimates above the cap. It does not pin
+provider routing: `provider: "openrouter"` selects the service, not an endpoint slug. Token pricing is a rough
+estimate of 4,096 tokens per megapixel with a 1.5 safety factor; default 1K means 1 megapixel.
+`maxCostUsd` checks that estimate, **not a guaranteed final charge**. The record includes `estimateUsd`, actual
+`costUsd`, `providerSlug` (the estimated endpoint), and `overCap` if the actual charge exceeds the cap.
+
+Images are decoded into `image-1.<ext>` and subsequent files in the run folder, with copies in `outDir` if
+specified. Results contain paths, byte sizes and PNG/JPEG/WebP dimensions; SVG has no dimensions. Base64 and
+raw HTTP bodies never enter answers, run records or transcripts. There are no retries or model fallbacks;
+402 is `limit`, 429 is `rate_limited`, and 502 is `failed` with “generation failed (not billed)”.
+
+`fleet_accounts` with `backend: "image"` shows Codex first, then up to 15 OpenRouter models with their cheapest
+endpoint output prices. Image prices and the image catalogue are cached for 24 hours; the text/free catalogue
+keeps its one-hour cache. All displayed OpenRouter image models are marked paid.
 
 ## Traps
 
