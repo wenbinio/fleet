@@ -16,7 +16,7 @@ import { finalText } from "../runner/ask-job.mjs";
 
 import { resolveDataDir } from "../runner/lib/data-dir.mjs";
 
-const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
+const SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 const TERMINAL_STATUSES = new Set(["done", "interrupted", "failed"]);
 const TRANSCRIPT_LIMIT = 40_000;
 const WORKER_HIDDEN = new Set(["fleet_ask", "fleet_steer", "fleet_interrupt", "fleet_review", "fleet_shot", "fleet_deploy_wait"]);
@@ -330,10 +330,14 @@ async function handleMessage(message) {
 
   if (message.method === "initialize") {
     result(message.id, {
-      protocolVersion: message.params?.protocolVersion ?? DEFAULT_PROTOCOL_VERSION,
+      protocolVersion: SUPPORTED_PROTOCOL_VERSIONS.includes(message.params?.protocolVersion) ? message.params.protocolVersion : SUPPORTED_PROTOCOL_VERSIONS[0],
       capabilities: { tools: {} },
-      serverInfo: { name: "fleet", version: "0.15.0" },
+      serverInfo: { name: "fleet", version: "0.15.1" },
     });
+    return;
+  }
+  if (message.method === "ping") {
+    result(message.id, {});
     return;
   }
   if (message.method === "tools/list") {

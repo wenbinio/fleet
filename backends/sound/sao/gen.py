@@ -5,7 +5,7 @@ from diffusers import StableAudioPipeline
 jobs = json.load(open(sys.argv[1], encoding='utf-8'))
 out = sys.argv[2] if len(sys.argv) > 2 else 'out'
 os.makedirs(out, exist_ok=True)
-pipe = StableAudioPipeline.from_pretrained('stabilityai/stable-audio-open-1.0', torch_dtype=torch.float16).to('cuda')
+pipe = StableAudioPipeline.from_pretrained('stabilityai/stable-audio-open-1.0', revision='f21265c1e2710b3bd2386596943f0007f55f802e', torch_dtype=torch.float16).to('cuda')
 NEG = 'low quality, noise, hiss, distortion, speech, voice, vocals, music'
 for j in jobs:
     path = os.path.join(out, j['key'] + '.wav')

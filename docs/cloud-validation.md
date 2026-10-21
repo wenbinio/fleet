@@ -29,7 +29,7 @@ Run the steps in order; fill the Results table as you go. Cloud sandboxes are Li
 
 While `/fleet:setup` runs (or run these directly if setup stalls), capture:
 
-1. Node present: `node --version` — need >= 18. Record version.
+1. Node present: `node --version` — need >= 24; prefer Node 24 LTS. Odd-numbered releases warn but remain usable. Record version.
 2. Codex installable: `which codex || npm i -g @openai/codex && which codex`. Record whether the global npm install succeeds in the sandbox and the resulting path.
 3. Shell smoke (API-key mode; use a fresh token and the configured model/effort):
    ```sh
@@ -87,7 +87,7 @@ For every red row above, record ALL of:
 | # | Check | Result (PASS/FAIL/SKIP) | Evidence / notes |
 |---|-------|------------------------|------------------|
 | 1 | Plugin loads from checked-in settings.json | | |
-| 2a | `node --version` >= 18 | | version: |
+| 2a | `node --version` >= 24 | | version: |
 | 2b | Codex installable via npm | | path: |
 | 2c | Successful shell smoke with OPENAI_API_KEY | | |
 | 2d | config.json written (authMode / backend) | | values: |

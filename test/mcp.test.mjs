@@ -110,9 +110,18 @@ test("MCP server lists runs and queues only non-terminal delegate steering", { t
   });
 
   const initialized = await rpc.request({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "fixture-version" } });
-  assert.equal(initialized.result.protocolVersion, "fixture-version");
+  assert.equal(initialized.result.protocolVersion, "2025-11-25");
+  for (const version of ["2025-11-25", "2025-06-18", "2025-03-26"]) {
+    const negotiated = await rpc.request({ jsonrpc: "2.0", id: `version-${version}`, method: "initialize", params: { protocolVersion: version } });
+    assert.equal(negotiated.result.protocolVersion, version);
+  }
+  const withoutVersion = await rpc.request({ jsonrpc: "2.0", id: "no-version", method: "initialize", params: {} });
+  assert.equal(withoutVersion.result.protocolVersion, "2025-11-25");
   assert.equal(await readFile(path.join(dataDir, "runs/late-at-startup/answer.txt"), "utf8"), "copied before any tool call");
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
+  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "ping" })}\n`);
+  const pong = await rpc.request({ jsonrpc: "2.0", id: "ping", method: "ping" });
+  assert.deepEqual(pong, { jsonrpc: "2.0", id: "ping", result: {} });
 
   const listed = await rpc.request({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   assert.equal(listed.result.tools.length, 11);

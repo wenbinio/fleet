@@ -14,6 +14,7 @@ import { inspectRegistration, registrationMatches, registrationUses, parseNamedI
 import { approvalPlan } from "./core/install-approvals.mjs";
 import { TOOLS } from "./mcp/fleet-mcp.mjs";
 import { localStatus, localProvider, localDefaults } from "./core/lib/local.mjs";
+import { nodeVersionPolicy } from "./core/lib/node-version.mjs";
 export { setupClaude } from "./core/install-claude.mjs";
 // Root setup keeps its rows/flags and marketplace source, while using the same
 // installer implementation and default profile as standalone Claude installs.
@@ -66,23 +67,25 @@ export function localSetupCommand(status, models = []) {
   const downloads = models.length ? models.map(model => `ollama pull ${quote(model)}`).join("\n") : "Choose a local model with Lok, then add it to profile local.models and set config local.default.";
   return `${downloads}\nMulti-GB downloads need Lok's yes. OLLAMA_MODELS may be set manually; fleet never changes it.`;
 }
-export function soundRecipe(root, home, { platform = process.platform } = {}) {
+export function soundRecipe(root, home, { platform = process.platform, config = {}, exists = fs.existsSync } = {}) {
   const windows = platform === "win32", sound = path.join(root, "backends", "sound");
-  const sao = path.join(home, "sound", "sao-venv"), moss = path.join(home, "sound", "moss-venv");
+  const sao = config.soundVenv || path.join(home, "sound", "sao-venv"), moss = config.mossVenv || path.join(home, "sound", "moss-venv");
   const py = venv => path.join(venv, windows ? "Scripts" : "bin", windows ? "python.exe" : "python");
-  const source = path.join(home, "sound", "MOSS-TTS"), weights = path.join(sound, "weights", "MOSS-SoundEffect-v2.0");
-  const cmd = (exe, args) => `${windows ? "& " : ""}${quote(exe)} ${args.map(quote).join(" ")}`;
+  const source = path.join(home, "sound", "MOSS-TTS"), weights = path.join(path.dirname(config.mossTools || path.join(sound, "moss")), "weights", "MOSS-SoundEffect-v2.0");
+  const shellQuote = value => `'${String(value).replaceAll("'", windows ? "''" : "'\"'\"'")}'`;
+  const cmd = (exe, args) => `${windows ? "& " : ""}${shellQuote(exe)} ${args.map(shellQuote).join(" ")}`;
   return [
-    cmd(windows ? "py" : "python3.13", [...(windows ? ["-3.13"] : []), "-m", "venv", sao]),
-    cmd(py(sao), ["-m", "pip", "install", "torch", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cu124"]),
-    cmd(py(sao), ["-m", "pip", "install", "diffusers", "transformers", "accelerate", "soundfile", "scipy", "huggingface_hub", "sentencepiece", "protobuf", "torchsde"]),
-    cmd(path.join(sao, windows ? "Scripts" : "bin", windows ? "hf.exe" : "hf"), ["download", "stabilityai/stable-audio-open-1.0"]),
-    cmd(windows ? "py" : "python3.12", [...(windows ? ["-3.12"] : []), "-m", "venv", moss]),
-    cmd(py(moss), ["-m", "pip", "install", "torch==2.9.0", "torchaudio==2.9.0", "--index-url", "https://download.pytorch.org/whl/cu128"]),
-    cmd(py(moss), ["-m", "pip", "install", "transformers==4.57.1", "diffusers==0.37.1", "numpy==1.26.4", "accelerate", "soundfile", "scipy", "huggingface_hub"]),
-    cmd("git", ["clone", "https://github.com/OpenMOSS/MOSS-TTS.git", source]),
-    cmd(py(moss), ["-m", "pip", "install", "-e", path.join(source, "moss_soundeffect_v2")]),
-    cmd(path.join(moss, windows ? "Scripts" : "bin", windows ? "hf.exe" : "hf"), ["download", "OpenMOSS-Team/MOSS-SoundEffect-v2.0", "--local-dir", weights]),
+    ...(!exists(sao) ? [cmd(windows ? "py" : "python3.13", [...(windows ? ["-3.13"] : []), "-m", "venv", sao])] : []),
+    cmd(py(sao), ["-c", "import sys; assert sys.version_info[:2] == (3, 13), 'SAO requires Python 3.13'"]),
+    cmd(py(sao), ["-m", "pip", "install", "-r", path.join(sound, "sao", "requirements.lock.txt"), "--extra-index-url", "https://download.pytorch.org/whl/cu124"]),
+    cmd(path.join(sao, windows ? "Scripts" : "bin", windows ? "hf.exe" : "hf"), ["download", "stabilityai/stable-audio-open-1.0", "--revision", "f21265c1e2710b3bd2386596943f0007f55f802e"]),
+    ...(!exists(moss) ? [cmd(windows ? "py" : "python3.12", [...(windows ? ["-3.12"] : []), "-m", "venv", moss])] : []),
+    cmd(py(moss), ["-c", "import sys; assert sys.version_info[:2] == (3, 12), 'MOSS requires Python 3.12'"]),
+    cmd("uv", ["pip", "install", "--python", py(moss), "-r", path.join(sound, "moss", "requirements.lock.txt"), "--extra-index-url", "https://download.pytorch.org/whl/cu128", "--index-strategy", "unsafe-best-match"]),
+    ...(!exists(source) ? [cmd("git", ["clone", "https://github.com/OpenMOSS/MOSS-TTS.git", source])] : []),
+    cmd("git", ["-C", source, "checkout", "934d6826b084c46a0d033402174d5f8ac4ed2519"]),
+    cmd(py(moss), ["-m", "pip", "install", "--no-deps", "-e", path.join(source, "moss_soundeffect_v2")]),
+    cmd(path.join(moss, windows ? "Scripts" : "bin", windows ? "hf.exe" : "hf"), ["download", "OpenMOSS-Team/MOSS-SoundEffect-v2.0", "--revision", "e35df4d82fbe87fcd5d14e5d100e349c0c3c076d", "--local-dir", weights]),
     `Set soundVenv=${quote(sao)} and mossVenv=${quote(moss)} in ${quote(path.join(home, "config.json"))}.`,
     "Before the SAO download, accept its model license and run hf auth login yourself if required. Complete all downloads before asking an agent to generate sound.",
   ].join("\n");
@@ -144,6 +147,7 @@ export async function install(opts, {
   env = process.env, root = ROOT, platform = process.platform, run = capture,
   inspect = inspectBackend, apiOptions = {}, readAuth,
   existsLocal = fs.existsSync,
+  nodeVersion = process.version,
   readDocument = readText,
 } = {}) {
   const home = toolkitHome(env), user = userHome(env);
@@ -166,6 +170,8 @@ export async function install(opts, {
     try { return await run(exe, args, { env, timeout: 30_000 }); } catch { return { code: 1, stdout: "", stderr: "command failed" }; }
   };
   if (!remove) {
+    const nodePolicy = nodeVersionPolicy(nodeVersion);
+    add({ id: "node", status: !nodePolicy.supported ? "needs-you" : nodePolicy.warning ? "warn" : "done", detail: `${nodeVersion}${nodePolicy.warning ? '; ' + nodePolicy.warning : ''}` });
     const config = loadConfig(env); let nextConfig = { ...config, ...soundDefaults(config) };
     if (!nextConfig.providers?.length) nextConfig.providers = [defaultProvider(env)];
     if (!nextConfig.chatgptWeb) nextConfig.chatgptWeb = { ...CHATGPT_DEFAULTS };
@@ -189,7 +195,7 @@ export async function install(opts, {
       const actionable = backend === "local" ? localSetupCommand(status, profile.local.models) : status.found && login ? login : backend === "grok" ? `${platform === "win32" ? "irm https://x.ai/cli/install.ps1 | iex" : "curl -fsSL https://x.ai/cli/install.sh | bash"}\ngrok login` : command;
       add({ id: `backend:${backend}`, backend, status: missing ? "needs-you" : "done", detail: `${status.detail || "available"}${status.version ? `; ${status.version}` : ""}${missing ? `; or use --off ${backend}` : ""}`, ...(missing ? { command: actionable } : {}) });
     }
-    if (opts.with === "sound") add({ id: "sound:download", backend: "sound", status: "needs-you", detail: "Multi-GB venv/model installation; run manually after reviewing GPU, disk and licenses", command: soundRecipe(root, home, { platform }) });
+    if (opts.with === "sound") add({ id: "sound:download", backend: "sound", status: "needs-you", detail: "Requires Python 3.13 for SAO, Python 3.12 for MOSS, and uv; multi-GB pinned venv/model installation, run manually after reviewing GPU, disk and licenses", command: soundRecipe(root, home, { platform, config: nextConfig }) });
     if (!hosts.includes("claude")) {
       const tools = Object.fromEntries(["node", "codex"].map(name => [name, resolveTool(name, { env, config: nextConfig, platform }) ?? (name === "node" ? process.execPath : null)]));
       const versions = {};

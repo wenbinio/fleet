@@ -1,10 +1,10 @@
 # Fleet
 
-Version **0.15.0**
+Version **0.15.1**
 
 ## New device, in three steps
 
-1. Install Node 18+ and git, then `git clone https://github.com/wenbinio/fleet.git` (private).
+1. Install Node 24 LTS or newer and git, then `git clone https://github.com/wenbinio/fleet.git` (private). Prefer an even-numbered LTS release.
 2. Tell any agent (Claude Code, Codex, Grok…): "read AGENTS.md in the fleet folder and set fleet up". It runs
    `node install.mjs --plan`, applies the safe part, and hands you one short list: sign-ins, the OpenRouter key
    (hidden prompt), optional sound downloads.
@@ -42,6 +42,13 @@ PATH changes or sound downloads. `--set-key openrouter` uses a hidden Windows se
 set `OPENROUTER_API_KEY` privately. `--with sound` prints separate SAO/MOSS venv and model download recipes.
 Remote agy/DeepSeek installer commands are not bundled: follow their official installer, then the reported login
 step. agy gets MCP only until a documented rules/skills location is available.
+Sound recipes use the bundled `backends/sound/{sao,moss}/requirements.lock.txt` files. SAO requires Python 3.13
+(captured on 3.13.12) and CUDA 12.4 wheels; MOSS requires Python 3.12 (captured on 3.12.15), `uv` and CUDA 12.8
+wheels with `unsafe-best-match`. Existing configured venvs are retained and checked for the required minor.
+MOSS source is checked out at `934d6826b084c46a0d033402174d5f8ac4ed2519` and installed editable with `--no-deps`;
+do not upgrade its pinned Torch, Transformers or NumPy. Downloads use SAO revision
+`f21265c1e2710b3bd2386596943f0007f55f802e` and MOSS revision `e35df4d82fbe87fcd5d14e5d100e349c0c3c076d`.
+These are manual `needs-you` steps, never installer actions. The bundled SAO loader also uses its pinned revision.
 Web backend checks read saved state/config and resolve Chrome's path; they never launch Chrome, including
 for a version query.
 

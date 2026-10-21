@@ -72,7 +72,7 @@ function fixture(t) {
     }
     assert.fail(`unexpected invocation ${exe}: ${args}`);
   };
-  const options = { env, root: ROOT, run, existsLocal: () => false, inspect: async backend => { inspections.push(backend); return { found: true, signedIn: true, detail: "fixture account" }; } };
+  const options = { env, root: ROOT, run, nodeVersion: "v24.0.0", existsLocal: () => false, inspect: async backend => { inspections.push(backend); return { found: true, signedIn: true, detail: "fixture account" }; } };
   return { home, env, calls, servers, plugins, markets, codexPlugins, codexMarkets, inspections, options, ...dataPaths({ env }) };
 }
 const readOnlyCall = call => call[1] === "--version" || ["mcp list", "mcp list --json", "mcp get fleet --json", "plugin list", "plugin marketplace list", "plugin list --json"].includes(call.slice(1).join(" "));
@@ -599,10 +599,56 @@ test("sound recipes remain manual and use bundled script weight locations and pi
   const f = fixture(t), result = await install(parseArgs(["--apply", "--profile", "minimal", "--host", "generic", "--with", "sound"]), f.options);
   const sound = result.steps.find(step => step.id === "sound:download");
   assert.equal(sound.status, "needs-you");
-  for (const value of ["3.13", "3.12", "cu124", "cu128", "2.9.0", "4.57.1", "0.37.1", "stable-audio-open-1.0", "MOSS-SoundEffect-v2.0"]) assert.ok(sound.command.includes(value));
-  assert.ok(sound.command.includes(JSON.stringify(path.join(ROOT, "backends", "sound", "weights", "MOSS-SoundEffect-v2.0")).slice(1, -1)));
+  for (const value of ["3.13", "3.12", "https://download.pytorch.org/whl/cu124", "https://download.pytorch.org/whl/cu128", "--index-strategy", "unsafe-best-match", "--no-deps", "checkout", "934d6826b084c46a0d033402174d5f8ac4ed2519", "--revision", "f21265c1e2710b3bd2386596943f0007f55f802e", "e35df4d82fbe87fcd5d14e5d100e349c0c3c076d", "stable-audio-open-1.0", "MOSS-SoundEffect-v2.0"]) assert.ok(sound.command.includes(value), value);
+  for (const engine of ["sao", "moss"]) {
+    const lock = path.join(ROOT, "backends", "sound", engine, "requirements.lock.txt");
+    assert.ok(sound.command.includes(`'${lock}'`));
+    assert.ok(fs.readFileSync(lock, "utf8").trim().split(/\r?\n/).every(line => /^[A-Za-z0-9_.-]+==\S+$/.test(line)), 'every locked package is pinned');
+  }
+  assert.match(sound.detail, /Python 3.13 for SAO, Python 3.12 for MOSS/);
+  assert.match(fs.readFileSync(path.join(ROOT, "backends/sound/sao/gen.py"), "utf8"), /revision='f21265c1e2710b3bd2386596943f0007f55f802e'/);
+  assert.ok(!/'(?:torch|torchaudio|transformers|diffusers|numpy|accelerate|soundfile|scipy|huggingface_hub)'/.test(sound.command));
+  assert.ok(sound.command.includes(`'${path.join(ROOT, "backends", "sound", "weights", "MOSS-SoundEffect-v2.0")}'`));
   assert.ok(!f.calls.some(call => call.some(value => /pip|download|venv|clone/.test(value))));
   assert.ok(soundRecipe(ROOT, f.env.FLEET_HOME, { platform: "linux" }).includes("python3.13"));
+});
+
+test("sound recipe preserves existing configured venvs and checks their Python minors", t => {
+  const f = fixture(t), config = { soundVenv: path.join(f.home, "custom-sao"), mossVenv: path.join(f.home, "custom-moss"), mossTools: path.join(f.home, "custom-moss-tools/tools") };
+  fs.mkdirSync(config.soundVenv); fs.mkdirSync(config.mossVenv);
+  const recipe = soundRecipe(ROOT, f.env.FLEET_HOME, { platform: "linux", config });
+  assert.ok(!recipe.includes("'venv'"));
+  for (const venv of [config.soundVenv, config.mossVenv]) assert.ok(recipe.includes(`'${path.join(venv, "bin/python")}'`));
+  assert.ok(recipe.includes('sys.version_info[:2] == (3, 13)')); assert.ok(recipe.includes('sys.version_info[:2] == (3, 12)'));
+  assert.ok(recipe.includes(`'${path.join(f.home, "custom-moss-tools/weights/MOSS-SoundEffect-v2.0")}'`));
+});
+
+test("sound commands quote spaces, dollar signs and apostrophes literally in both shells", t => {
+  const f = fixture(t);
+  const config = { soundVenv: path.join(f.home, "sound $cache's folder"), mossVenv: path.join(f.home, "moss $cache's folder") };
+  for (const platform of ["win32", "linux"]) {
+    const windows = platform === "win32";
+    const recipe = soundRecipe(ROOT, f.env.FLEET_HOME, { platform, config, exists: () => false });
+    for (const engine of ["sound", "moss"]) {
+      const escapedFolder = windows ? `${engine} $cache''s folder` : `${engine} $cache'"'"'s folder`;
+      const directory = path.join(f.home, escapedFolder);
+      assert.ok(recipe.includes(`'venv' '${directory}'`));
+      const executable = path.join(directory, windows ? "Scripts" : "bin", windows ? "python.exe" : "python");
+      assert.ok(recipe.includes(`${windows ? "& " : ""}'${executable}' '-c'`));
+    }
+    assert.ok(recipe.includes(windows ? "''SAO requires Python 3.13''" : "'\"'\"'SAO requires Python 3.13'\"'\"'"));
+  }
+});
+
+test("installer requires Node 24 and warns without failing on odd newer majors", async t => {
+  const f = fixture(t);
+  for (const [nodeVersion, status] of [["v18.20.0", "needs-you"], ["v20.0.0", "needs-you"], ["v23.0.0", "needs-you"], ["v24.0.0", "done"], ["v25.6.1", "warn"], ["v26.0.0", "done"], ["v27.0.0", "warn"]]) {
+    const result = await install(parseArgs(["--plan", "--profile", "minimal", "--host", "generic"]), { ...f.options, nodeVersion });
+    const row = result.steps.find(step => step.id === "node"); assert.equal(row.status, status);
+    assert.equal(result.needsYou.some(step => step.id === "node"), status === "needs-you");
+    if (status === "warn") assert.match(row.detail, /odd-numbered Node releases are short-lived; use 24 LTS/);
+    if (status === "needs-you") assert.match(row.detail, /install Node 24 LTS/);
+  }
 });
 test("key setter never exposes key input and errors are generic; non-Windows never prompts", async t => {
   const f = fixture(t);
