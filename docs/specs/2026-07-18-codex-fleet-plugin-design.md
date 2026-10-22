@@ -1,8 +1,10 @@
 # codex-fleet Plugin — Design Spec
 
+> Historical design, kept for the decisions it records. The repository it names, `wenbinio/claudeorchestratortocodex`, was imported into [wenbinio/fleet](https://github.com/wenbinio/fleet) and retired. Install commands, the `codex-fleet` plugin name, and the directory tree below describe that older plugin. The live marketplace is `agent-toolkit`, the live plugin is `fleet`, and the live install is `/plugin marketplace add wenbinio/fleet` then `/plugin install fleet@agent-toolkit`.
+
 **Date:** 2026-07-18
-**Repo:** https://github.com/wenbinio/claudeorchestratortocodex (public)
-**Status:** Approved by user; pre-implementation
+**Repo at the time:** https://github.com/wenbinio/claudeorchestratortocodex (public, now retired)
+**Status:** Approved by user; pre-implementation. Superseded by the fleet tree.
 
 ## Goal
 

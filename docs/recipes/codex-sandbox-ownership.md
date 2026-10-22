@@ -15,10 +15,10 @@ neither the new sandbox nor your own account has on files another account owns. 
 (Get-Acl <file>).Owner        # anything other than you = affected
 ```
 
-`node setup.mjs --check-owner <dir>` lists the affected files.
+`node setup.mjs --check-owner <dir>` belonged to the old agent-toolkit entry and is not in this repository. The ACL check above is the check here.
 
 **Fix that doesn't touch permissions:** make a fresh clone (you own every file in it), run Codex there, then put it in
 place of the old folder (rename the old one aside), or pull the work back. `git` rewriting files also makes them
 yours. Leave `.git` alone: Codex deliberately denies the sandbox write access there.
 
-**Prevent it:** probe by editing an existing file, not by creating one (`node setup.mjs --smoke`).
+**Prevent it:** probe by editing an existing file, not by creating one. `node setup.mjs --smoke` is not in this repository.

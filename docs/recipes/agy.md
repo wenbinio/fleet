@@ -16,7 +16,7 @@ agy -p "<prompt>" --mode plan --model gemini-3.8-flash-high --add-dir <dir> \
     --output-format json --print-timeout 600s
 ```
 
-Or use `bin/agy-run`, which does the checks below for you, and `bin/agy-fan` to run several at once.
+Or use `node core/lib/runners.mjs agy-run <prompt-file>`, which does the checks below for you, and `node core/lib/runners.mjs agy-fan` to run several at once.
 
 - `--mode plan` is read-only. Asked to write a file, it only drafts a plan.
 - `agy models` lists the model ids. As of 2026-10-18: `gemini-3.8-flash-high|medium|low`, `claude-sonnet-4-6`,
@@ -42,6 +42,6 @@ Or use `bin/agy-run`, which does the checks below for you, and `bin/agy-fan` to 
 
 ## Plugin
 
-The `fleet` plugin (`plugins/fleet`) runs agy through `agy-run`: `fleet:ask agy …`, `fleet:fan` (up to 4 agy jobs at
+The fleet plugin runs agy through that runner: `/fleet:ask` with backend `agy`, `/fleet:fan` (up to 4 agy jobs at
 once, mixed models and backends), and the `fleet_*` run history. agy is plan-mode only there; a denial is reported
 as `denied`, never as an answer. The raw output shapes are in [docs/agy-output.md](../agy-output.md).
