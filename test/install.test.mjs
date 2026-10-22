@@ -18,6 +18,8 @@ import { parseMcpInventory, registrationMatches, parseNamedInventory, inspectReg
 import { approvalPlan, editCodexApprovals } from "../core/install-approvals.mjs";
 
 function write(file, value) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, value); return file; }
+const readIfPresent = file => fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+const invalidFleetTransport = "Error: failed to load bootstrap configuration\n\nCaused by:\n    invalid transport\n    in `mcp_servers.fleet`\n";
 const realOutput = name => fs.readFileSync(new URL(`./fixtures/cli-real/${name}`, import.meta.url), "utf8");
 function capturedResult(name, replacements = []) {
   let text = realOutput(name);
@@ -51,6 +53,8 @@ function fixture(t) {
     const host = exe.replace("fake-", ""); calls.push([host, ...args]);
     if (args[0] === "--version") return { code: 0, stdout: "v25.0.0", stderr: "" };
     if (args[0] === "mcp") {
+      // Like real Codex: fleet tool tables without a fleet transport break every command.
+      if (host === "codex" && !servers.codex && /^\[mcp_servers\.fleet\.tools\./m.test(readIfPresent(path.join(home, ".codex/config.toml")))) return { code: 1, stdout: "", stderr: invalidFleetTransport };
       if (args[1] === "get") return servers[host]
         ? { code: 0, stdout: JSON.stringify({ name: "fleet", enabled: true, transport: { type: "stdio", ...servers[host] } }), stderr: "" }
         : { code: 1, stdout: "", stderr: "Error: No MCP server named 'fleet' found." };
@@ -152,6 +156,8 @@ test("Codex approval tables preserve quoted names, multiline text and unrelated 
   const existing = '[ mcp_servers . \'fleet\' . tools . "fleet_run" ]\r\napproval_mode = "prompt"\r\n';
   const suffix = '[apps.google_drive.tools."google_drive.search"]\r\napproval_mode = "prompt"\r\n# keep comment\r\n[mcp_servers.fleet.tools.fleet_ask]\r\napproval_mode = "prompt"\r\n';
   const original = prefix + existing + suffix; write(file, original);
+  // Real Codex loads fleet tool tables only alongside a registered fleet transport.
+  f.servers.codex = { command: "node", args: [path.join(ROOT, "mcp/fleet-mcp.mjs")] };
   const before = snapshot(f.home);
   const plan = await install(parseArgs(["--plan", "--host", "codex"]), f.options);
   assert.equal(plan.steps.find(step => step.id === "approvals:codex").status, "auto");
@@ -467,6 +473,104 @@ test("approval guidance keeps mutating tools subject to Lok and preserves their 
   }
   assert.match(block, /Lok decides.*installer never grants them/);
   assert.ok(!f.calls.flat().some(arg => String(arg).includes("approval_mode")));
+});
+const fleetScript = path.join(ROOT, "mcp/fleet-mcp.mjs"), fleetTable = /^\[mcp_servers\.fleet\.tools\./m;
+const stepOf = (result, id) => result.steps.find(step => step.id === id);
+// Records config.toml as each fake codex mutation sees it.
+const watchCodex = (f, command, seen) => ({ ...f.options, run: async (exe, args) => {
+  if (exe === "fake-codex" && args.slice(0, 2).join(" ") === command) seen.push(readIfPresent(path.join(f.home, ".codex/config.toml")));
+  return f.options.run(exe, args);
+} });
+for (const seed of [null, '# keep\r\nmodel = "example"\r\n[apps.other]\r\nkeep = true\r\n']) test(`fresh Codex read-only approvals follow confirmed registration: ${seed ? "existing" : "absent"} config`, async t => {
+  const f = fixture(t), file = path.join(f.home, ".codex/config.toml"), seen = [];
+  if (seed) write(file, seed);
+  const options = watchCodex(f, "mcp add", seen), opts = parseArgs(["--apply", "--profile", "lok", "--host", "codex"]);
+  const result = await install(opts, options);
+  assert.deepEqual(seen, [seed ?? ""], "mcp add must run once, before any fleet approval table exists");
+  for (const id of ["host:codex", "approvals:codex"]) assert.equal(stepOf(result, id).status, "done", id);
+  const ids = result.steps.map(step => step.id);
+  assert.ok(ids.indexOf("host:codex") < ids.indexOf("approvals:codex"));
+  assert.deepEqual(f.servers.codex.args, [fleetScript]);
+  const text = fs.readFileSync(file, "utf8");
+  assert.equal(text, editCodexApprovals(seed ?? "", readOnlyTools, true)); assert.ok(text.startsWith(seed ?? ""));
+  for (const name of readOnlyTools) assert.ok(text.includes(`[mcp_servers.fleet.tools.${name}]`));
+  const before = snapshot(f.home), count = f.calls.length;
+  const second = await install(opts, options);
+  assert.deepEqual(snapshot(f.home), before); assert.ok(second.steps.every(step => !step.changed));
+  assert.ok(f.calls.slice(count).every(readOnlyCall)); assert.equal(seen.length, 1);
+});
+test("failed or unowned Codex registration defers approvals and leaves config.toml byte-identical", async t => {
+  const f = fixture(t), file = path.join(f.home, ".codex/config.toml"), original = Buffer.from('﻿model = "example"\r\n');
+  write(file, original);
+  const options = { ...f.options, run: async (exe, args) => exe === "fake-codex" && args.slice(0, 2).join(" ") === "mcp add"
+    ? (f.calls.push(["codex", ...args]), { code: 1, stdout: "", stderr: "fixture failure" }) : f.options.run(exe, args) };
+  const plan = await install(parseArgs(["--plan", "--profile", "lok", "--host", "codex"]), options);
+  assert.equal(stepOf(plan, "host:codex").status, "auto"); assert.equal(stepOf(plan, "approvals:codex").status, "auto");
+  const result = await install(parseArgs(["--apply", "--profile", "lok", "--host", "codex"]), options);
+  assert.equal(stepOf(result, "host:codex").status, "needs-you");
+  assert.equal(stepOf(result, "approvals:codex").status, "needs-you");
+  assert.match(stepOf(result, "approvals:codex").detail, /fleet MCP is not registered; approvals deferred to keep Codex config loadable/);
+  assert.ok(fs.readFileSync(file).equals(original)); assert.ok(!fs.existsSync(`${file}.fleet-backup`));
+  assert.ok(f.calls.some(call => call.slice(1, 3).join(" ") === "mcp add"));
+  f.servers.codex = { command: "node", args: [path.join(f.home, "unrelated/server.mjs")] };
+  const unowned = await install(parseArgs(["--plan", "--profile", "lok", "--host", "codex"]), options);
+  assert.equal(stepOf(unowned, "host:codex").status, "needs-you");
+  assert.equal(stepOf(unowned, "approvals:codex").status, "needs-you");
+  assert.match(stepOf(unowned, "approvals:codex").detail, /approvals deferred/);
+  await install(parseArgs(["--apply", "--profile", "lok", "--host", "codex"]), options);
+  assert.ok(fs.readFileSync(file).equals(original));
+});
+test("Codex recovers from orphaned read-only approval tables that broke its config", async t => {
+  const f = fixture(t), file = path.join(f.home, ".codex/config.toml"), seen = [];
+  const unrelated = '# keep\r\nmodel = "example"\r\n[apps.other]\r\nkeep = true\r\n', seeded = editCodexApprovals(unrelated, readOnlyTools, true);
+  write(file, seeded);
+  const inventory = await inspectRegistration("codex", "fake-codex", f.options.run);
+  assert.deepEqual(inventory, { known: false, invalidFleetTransport: true });
+  const before = snapshot(f.home), options = watchCodex(f, "mcp add", seen);
+  const plan = await install(parseArgs(["--plan", "--profile", "lok", "--host", "codex"]), options);
+  assert.deepEqual(snapshot(f.home), before);
+  assert.equal(stepOf(plan, "host:codex").status, "auto");
+  assert.match(stepOf(plan, "host:codex").detail, /Remove orphaned fleet approval tables .*then register fleet MCP/);
+  assert.equal(stepOf(plan, "approvals:codex").status, "auto");
+  const opts = parseArgs(["--apply", "--profile", "lok", "--host", "codex"]), result = await install(opts, options);
+  for (const id of ["host:codex", "approvals:codex"]) assert.equal(stepOf(result, id).status, "done", id);
+  assert.equal(seen.length, 1); assert.ok(seen[0].startsWith(unrelated)); assert.ok(!fleetTable.test(seen[0]), "orphans are removed before mcp add");
+  assert.deepEqual(f.servers.codex.args, [fleetScript]);
+  const text = fs.readFileSync(file, "utf8");
+  assert.ok(text.startsWith(unrelated));
+  for (const name of readOnlyTools) assert.ok(text.includes(`[mcp_servers.fleet.tools.${name}]\r\napproval_mode = "approve"`));
+  assert.equal(fs.readFileSync(`${file}.fleet-backup`, "utf8"), seeded);
+  assert.ok(!fs.readdirSync(path.dirname(file)).some(name => name.endsWith(".tmp")));
+  const applied = snapshot(f.home);
+  await install(opts, options);
+  assert.deepEqual(snapshot(f.home), applied); assert.equal(seen.length, 1);
+});
+test("Codex recovery keeps a user fleet table and asks for manual repair when registration still fails", async t => {
+  const f = fixture(t), file = path.join(f.home, ".codex/config.toml");
+  const user = '[mcp_servers.fleet.tools.fleet_ask]\napproval_mode = "prompt"\n', seeded = editCodexApprovals(user, readOnlyTools, true);
+  write(file, seeded);
+  const result = await install(parseArgs(["--apply", "--profile", "lok", "--host", "codex"]), f.options);
+  const host = stepOf(result, "host:codex");
+  assert.equal(host.status, "needs-you"); assert.match(host.detail, /remove them from .*config\.toml or add the server manually/);
+  assert.equal(stepOf(result, "approvals:codex").status, "needs-you");
+  const text = fs.readFileSync(file, "utf8");
+  assert.ok(text.startsWith(user)); assert.ok(!text.includes('approval_mode = "approve"'));
+  assert.equal(fs.readFileSync(`${file}.fleet-backup`, "utf8"), seeded); assert.ok(!f.servers.codex);
+  const again = await install(parseArgs(["--plan", "--profile", "lok", "--host", "codex"]), f.options);
+  assert.equal(stepOf(again, "host:codex").status, "needs-you"); assert.match(stepOf(again, "host:codex").detail, /add the server manually/);
+});
+test("Codex remove deletes approval tables before its registration", async t => {
+  const f = fixture(t), file = path.join(f.home, ".codex/config.toml"), unrelated = 'model = "example"\n', seen = [];
+  write(file, editCodexApprovals(unrelated, readOnlyTools, true));
+  f.servers.codex = { command: "node", args: [fleetScript] };
+  const result = await install(parseArgs(["--remove", "--host", "codex"]), watchCodex(f, "mcp remove", seen));
+  for (const id of ["approvals:codex", "host:codex"]) { assert.equal(stepOf(result, id).status, "done", id); assert.equal(stepOf(result, id).changed, true, id); }
+  const ids = result.steps.map(step => step.id);
+  assert.ok(ids.indexOf("approvals:codex") < ids.indexOf("host:codex"));
+  assert.deepEqual(seen.map(text => fleetTable.test(text)), [false], "approvals are removed before mcp remove");
+  assert.ok(!f.servers.codex);
+  const text = fs.readFileSync(file, "utf8");
+  assert.ok(text.startsWith(unrelated)); assert.ok(!text.includes("mcp_servers.fleet"));
 });
 test("plan is read-only and missing accounts require Lok or an explicit off choice", async t => {
   const f = fixture(t), before = snapshot(f.home);

@@ -84,11 +84,30 @@ export function editAgyApprovals(text, names, enable) {
   const newline = text.includes("\r\n") ? "\r\n" : "\n";
   return bom + JSON.stringify({ ...config, permissions: { ...permissions, allow: next } }, null, 2).replaceAll("\n", newline) + newline;
 }
+export const readOnlyNames = tools => tools.filter(tool => tool.annotations?.readOnlyHint === true).map(tool => tool.name);
+export const codexConfigFile = user => path.join(user, ".codex", "config.toml");
+// Re-read before applying so an intervening harness edit is preserved; the
+// first write keeps a one-time backup and every write is temp-then-rename.
+export function rewriteConfig(file, edit) {
+  const exists = fs.existsSync(file), current = exists ? fs.readFileSync(file) : Buffer.alloc(0);
+  const updated = Buffer.from(edit(current.toString("utf8")));
+  if (current.equals(updated)) return false;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const backup = `${file}.fleet-backup`;
+  try { fs.writeFileSync(backup, current, { flag: "wx", mode: exists ? fs.statSync(file).mode : 0o600 }); }
+  catch (error) { if (error.code !== "EEXIST") throw error; }
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, updated, { flag: "wx", mode: exists ? fs.statSync(file).mode : 0o600 });
+    fs.renameSync(temporary, file);
+  } finally { fs.rmSync(temporary, { force: true }); }
+  return true;
+}
 export function approvalPlan({ host, user, policy, remove, tools }) {
   if (!AUTO_APPROVE_POLICIES.includes(policy)) throw new Error("autoApprove must be none or read-only");
   if (!["codex", "agy"].includes(host)) return { status: "done", detail: host === "claude" ? "Claude keeps interactive approvals; no approval settings are written" : host === "grok" ? "Grok has no documented per-tool approval rule; no approval settings are written" : `${host}: no approval settings are written` };
-  const names = tools.filter(tool => tool.annotations?.readOnlyHint === true).map(tool => tool.name);
-  const file = host === "codex" ? path.join(user, ".codex", "config.toml") : path.join(user, ".gemini", "antigravity-cli", "settings.json");
+  const names = readOnlyNames(tools);
+  const file = host === "codex" ? codexConfigFile(user) : path.join(user, ".gemini", "antigravity-cli", "settings.json");
   const enable = !remove && policy === "read-only";
   const edit = host === "codex" ? editCodexApprovals : editAgyApprovals;
   const original = fs.existsSync(file) ? fs.readFileSync(file) : Buffer.alloc(0);
@@ -96,21 +115,6 @@ export function approvalPlan({ host, user, policy, remove, tools }) {
   return {
     status: original.equals(next) ? "done" : "auto",
     detail: `${enable ? "Approve" : "Remove approval for"} fleet read-only tools in ${file}; other permissions remain unchanged`,
-    apply() {
-      // Re-read before applying so an intervening harness edit is preserved.
-      const exists = fs.existsSync(file), current = exists ? fs.readFileSync(file) : Buffer.alloc(0);
-      const updated = Buffer.from(edit(current.toString("utf8"), names, enable));
-      if (current.equals(updated)) return false;
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      const backup = `${file}.fleet-backup`;
-      try { fs.writeFileSync(backup, current, { flag: "wx", mode: exists ? fs.statSync(file).mode : 0o600 }); }
-      catch (error) { if (error.code !== "EEXIST") throw error; }
-      const temporary = `${file}.${randomUUID()}.tmp`;
-      try {
-        fs.writeFileSync(temporary, updated, { flag: "wx", mode: exists ? fs.statSync(file).mode : 0o600 });
-        fs.renameSync(temporary, file);
-      } finally { fs.rmSync(temporary, { force: true }); }
-      return true;
-    },
+    apply: () => rewriteConfig(file, text => edit(text, names, enable)),
   };
 }

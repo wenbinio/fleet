@@ -92,7 +92,10 @@ export async function inspectRegistration(host, exe, invoke) {
       // A supported get is authoritative; never replace its answer with list.
       return parseMcpInventory(result.stdout, { single: true });
     }
-    if (result.code === 1 && /^(?:Error:\s*)?No MCP server named 'fleet' found\.$/m.test(clean(`${result.stdout}\n${result.stderr}`))) return { known: true };
+    const output = clean(`${result.stdout}\n${result.stderr}`);
+    if (result.code === 1 && /^(?:Error:\s*)?No MCP server named 'fleet' found\.$/m.test(output)) return { known: true };
+    // Codex refuses its whole config when fleet tables exist without a transport.
+    if (/invalid transport/i.test(output) && /mcp_servers\.fleet(?![\w-])/.test(output)) return { known: false, invalidFleetTransport: true };
   }
   const result = await invoke(exe, ["mcp", "list", ...(host === "grok" ? ["--json"] : [])]);
   return result.code ? { known: false } : parseMcpInventory(result.stdout);

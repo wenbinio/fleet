@@ -11,7 +11,7 @@ import { setupClaude, refreshFleetConfig } from "./core/install-claude.mjs";
 import { dataPaths, migrateData } from "./runner/lib/data-dir.mjs";
 import { readProfile, BACKEND_NAMES, agentsBlock } from "./runner/lib/profile.mjs";
 import { inspectRegistration, registrationMatches, registrationUses, parseNamedInventory } from "./core/install-inventory.mjs";
-import { approvalPlan } from "./core/install-approvals.mjs";
+import { approvalPlan, codexConfigFile, editCodexApprovals, readOnlyNames, rewriteConfig } from "./core/install-approvals.mjs";
 import { TOOLS } from "./mcp/fleet-mcp.mjs";
 import { localStatus, localProvider, localDefaults } from "./core/lib/local.mjs";
 import { nodeVersionPolicy } from "./core/lib/node-version.mjs";
@@ -211,12 +211,13 @@ export async function install(opts, {
     }
   }
   for (const host of hosts) {
-    try {
-      const approval = approvalPlan({ host, user, policy: profile.autoApprove, remove, tools: TOOLS });
-      add({ id: `approvals:${host}`, host, status: approval.status, detail: approval.detail }, approval.apply);
-    } catch (error) {
-      add({ id: `approvals:${host}`, host, status: "needs-you", detail: `Approval settings preserved: ${error.message}` });
-    }
+    let approval;
+    try { approval = approvalPlan({ host, user, policy: profile.autoApprove, remove, tools: TOOLS }); }
+    catch (error) { approval = { status: "needs-you", detail: `Approval settings preserved: ${error.message}` }; }
+    // Codex rejects fleet approval tables until fleet has a transport, so
+    // approvals follow registration except on removal.
+    const approvalsLater = !remove && ["codex", "agy"].includes(host);
+    if (!approvalsLater) add({ id: `approvals:${host}`, host, status: approval.status, detail: approval.detail }, approval.apply);
     if (host === "claude") {
       if (remove) {
         const exe = resolveTool("claude", { env, platform });
@@ -267,13 +268,21 @@ export async function install(opts, {
     const owned = registered || registrationUses(inventory.entry, mcp.args[0], platform) || registrationUses(inventory.entry, previousScript, platform);
     const known = inventory.known;
     const bestEffort = host === "agy" && Boolean(exe) && !remove && !known;
-    const status = !known ? bestEffort ? "auto" : "needs-you" : remove ? entryPresent ? owned ? "auto" : "needs-you" : "done" : registered ? "done" : entryPresent && !owned ? "needs-you" : "auto";
-    add({ id: `host:${host}`, host, status, detail: `${remove ? "Remove" : registered ? "Already registered:" : "Register"} fleet MCP${bestEffort ? "; unrecognized agy inventory; re-add best-effort" : !known ? "; inventory unavailable; inspect manually" : entryPresent && !owned ? "; existing fleet entry not owned by this installation" : ""}`, command: `${host} ${args.map(quote).join(" ")}` }, async () => {
+    // An earlier installer could leave read-only approval tables without a
+    // fleet transport; Codex then refuses every command until they are gone.
+    const codexConfig = codexConfigFile(user), invalidTransport = host === "codex" && !remove && inventory.invalidFleetTransport;
+    const stripOrphans = text => editCodexApprovals(text, readOnlyNames(TOOLS), false);
+    let recover = false;
+    if (invalidTransport) try { const text = readText(codexConfig); recover = stripOrphans(text) !== text; } catch {}
+    const manualFleetTables = `Codex rejects [mcp_servers.fleet.*] tables without a fleet transport; remove them from ${codexConfig} or add the server manually`;
+    const status = recover ? "auto" : !known ? bestEffort ? "auto" : "needs-you" : remove ? entryPresent ? owned ? "auto" : "needs-you" : "done" : registered ? "done" : entryPresent && !owned ? "needs-you" : "auto";
+    add({ id: `host:${host}`, host, status, detail: recover ? `Remove orphaned fleet approval tables from ${codexConfig}, then register fleet MCP` : `${remove ? "Remove" : registered ? "Already registered:" : "Register"} fleet MCP${bestEffort ? "; unrecognized agy inventory; re-add best-effort" : invalidTransport ? `; inventory unavailable; ${manualFleetTables}` : !known ? "; inventory unavailable; inspect manually" : entryPresent && !owned ? "; existing fleet entry not owned by this installation" : ""}`, command: `${host} ${args.map(quote).join(" ")}` }, async () => {
+      if (recover) rewriteConfig(codexConfig, stripOrphans);
       if (!remove && entryPresent) {
         const prior = await invoke(exe, ["mcp", "remove", "fleet", ...(host === "grok" ? ["--scope", "user"] : [])]);
         if (prior.code) throw new Error(`${host} old MCP registration could not be removed`);
       }
-      const result = await invoke(exe, args); if (result.code) throw new Error(`${host} MCP registration failed`);
+      const result = await invoke(exe, args); if (result.code) throw new Error(`${host} MCP registration failed${recover ? `; ${manualFleetTables}` : ""}`);
       if (remove) delete receipts[host];
       else {
         const confirmation = await inspectRegistration(host, exe, invoke);
@@ -283,6 +292,16 @@ export async function install(opts, {
         receipts[host] = { root };
       }
     });
+    if (approvalsLater) {
+      const deferred = "fleet MCP is not registered; approvals deferred to keep Codex config loadable";
+      // Stripped orphan tables must be re-added after recovery registration.
+      const approvalStatus = recover && approval.apply ? "auto" : approval.status;
+      if (host === "codex" && approvalStatus === "auto" && !["done", "auto"].includes(status)) add({ id: `approvals:${host}`, host, status: "needs-you", detail: `${approval.detail}; ${deferred}` });
+      else add({ id: `approvals:${host}`, host, status: approvalStatus, detail: approval.detail }, host === "codex" && approval.apply ? () => {
+        if (!registrationReady) throw new Error(deferred);
+        return approval.apply();
+      } : approval.apply);
+    }
     if (host === "codex" && !remove) {
       const pluginResult = exe ? await invoke(exe, ["plugin", "list"]) : null;
       const marketResult = exe ? await invoke(exe, ["plugin", "marketplace", "list"]) : null;
