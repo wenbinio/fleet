@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { capture, loadConfig, toolkitHome } from "./toolkit.mjs";
-import { spawnWorker, workerEnv } from "./worker.mjs";
+import { spawnWorker, workerEnv, redactSecrets } from "./worker.mjs";
 
 export const QWEN_FOLDER = "D:/AI/Qwen3.8-Abliterated";
 export const QWEN_MODEL = "Huihui-Qwen3.8-27B-Abliterated";
@@ -101,7 +101,7 @@ export async function ensureLocalReady({ env = process.env, platform = process.p
   try {
     fs.mkdirSync(runDir, { recursive: true }); fd = fs.openSync(log, "a");
     const powershell = path.win32.join(env.SystemRoot || env.SYSTEMROOT || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    const starter = spawnStarter(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", service.start.file], { env: workerEnv(env), windowsHide: true, stdio: ["ignore", fd, fd], detached: platform !== "win32" });
+    const starter = spawnStarter(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", service.start.file], { env: workerEnv(redactSecrets(env)), windowsHide: true, stdio: ["ignore", fd, fd], detached: platform !== "win32" });
     // Server descendants inherit only file handles, never pipes to this worker.
     // Readiness belongs to HTTP, not to the starter's exit/close/EOF lifecycle.
     starter.on("error", error => failed(`local starter spawn failed: ${error.code ?? error.name}: ${error.message}`, error));

@@ -260,6 +260,13 @@ test("run paths reject traversal and junction escapes", async t => {
   fs.symlinkSync(outside, linked, process.platform === "win32" ? "junction" : "dir");
   write(path.join(batch, "results.json"), JSON.stringify({ results: [{ taskId: "escape", transcriptPath: path.join(linked, "transcript.md") }] }));
   await assert.rejects(callTool("fleet_transcript", { runId: batch, taskId: "escape" }, { env: f.env }), /outside the plugin/);
+  const secret = write(path.join(outside, "secret.txt"), "secret-token");
+  fs.symlinkSync(secret, path.join(directory, "answer.txt"));
+  await assert.rejects(callTool("fleet_run", { runId: directory }, { env: f.env }), /symlink/);
+  fs.unlinkSync(path.join(directory, "answer.txt"));
+  const poisoned = readAsk(directory);
+  atomicJson(path.join(directory, "run.json"), { ...poisoned, eventsPath: secret });
+  await assert.rejects(callTool("fleet_transcript", { runId: directory }, { env: f.env }), /outside the allowed directory/);
 });
 test("wait and CLI report terminal outcomes and timeout without mutating runs", async t => {
   const f = fixture(t), { result, directory } = await reserve(f, { backend: "agy" });

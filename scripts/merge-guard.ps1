@@ -278,7 +278,9 @@ function Get-NormalizedCodexBranch {
         $branch = $branch.Substring('refs/heads/'.Length)
     }
 
-    if ($branch -cmatch '^codex/[A-Za-z0-9._/-]+$') {
+    # Any codex/* operand is a merge candidate. Limiting this to the verdict
+    # charset let names such as codex/foo+bar skip the seatbelt.
+    if ($branch -cmatch '^codex/.+') {
         return $branch
     }
 

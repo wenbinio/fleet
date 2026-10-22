@@ -120,7 +120,7 @@ export const ADAPTERS = {
     defaults: { model: "deepseek-flash" },
     allowed: ["cwd", "model"], required: ["cwd"], outputFile: "events.jsonl",
     validate(opts) { if (opts.model !== undefined && !["deepseek-flash", "deepseek-v4-pro"].includes(opts.model)) throw new Error("invalid deepseek model"); },
-    command: (run, { directory, repo }) => ({ exe: "powershell", args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(repo, "bin", "dsh-run.ps1"), "-Task", prompt(directory), "-Cwd", run.cwd, "-Model", run.model] }),
+    command: (run, { directory, repo }) => ({ exe: "powershell", args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(repo, "bin", "dsh-run.ps1"), "-Node", process.execPath, "-Task", prompt(directory), "-Cwd", run.cwd, "-Model", run.model] }),
     line(text, state) {
       try {
         const event = JSON.parse(text);

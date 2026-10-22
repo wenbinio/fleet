@@ -377,19 +377,13 @@ process_token() {
                 -m?*|-F?*|-s?*|-X?*|--message=*|--file=*|--strategy=*|--strategy-option=*|--cleanup=*|--into-name=*|--|-*)
                     ;;
                 refs/heads/codex/*)
+                    # Any codex/* merge in a known repo is checked. A name outside
+                    # the verdict charset (for example codex/foo+bar) used to be ignored.
                     branch=${parsed_token#refs/heads/}
-                    suffix=${branch#codex/}
-                    case $suffix in
-                        ''|*[!A-Za-z0-9._/-]*) ;;
-                        *) [ "$validate_only" = 1 ] || check_merge "$git_target" "$branch" ;;
-                    esac
+                    [ "$validate_only" = 1 ] || check_merge "$git_target" "$branch"
                     ;;
                 codex/*)
-                    suffix=${parsed_token#codex/}
-                    case $suffix in
-                        ''|*[!A-Za-z0-9._/-]*) ;;
-                        *) [ "$validate_only" = 1 ] || check_merge "$git_target" "$parsed_token" ;;
-                    esac
+                    [ "$validate_only" = 1 ] || check_merge "$git_target" "$parsed_token"
                     ;;
                 *) ;;
             esac

@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { resolveDataDir, legacyDataDir } from "./data-dir.mjs";
 import { ADAPTERS, BACKENDS, ASK_KEYS, TERMINAL_STATUSES, LIVE_STATUSES } from "./adapters.mjs";
 export { BACKENDS, ASK_KEYS, TERMINAL_STATUSES } from "./adapters.mjs";
-import { toolkitRepo } from "./runtime.mjs";
+import { toolkitRepo, loadToolkit } from "./runtime.mjs";
 import { assertOrchestrator, workerEnv } from "../../core/lib/worker.mjs";
 import { validateEffort } from "../../core/lib/effort.mjs";
 import { gpuGuard } from "../../core/lib/local.mjs";
@@ -27,6 +27,28 @@ export function atomicJson(file, value) {
 export function isInside(parent, candidate) {
   const relative = path.relative(parent, candidate);
   return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+// MCP transcript and answer reads must not follow a symlink or an eventsPath
+// planted in run.json out of the run directory or that run's Codex event folder.
+export function containedPath(file, roots) {
+  if (!Array.isArray(roots) || !roots.length) throw Object.assign(new Error("path is outside the allowed directory"), { code: "EPERM" });
+  const candidate = path.resolve(file);
+  const listed = fs.lstatSync(candidate);
+  if (listed.isSymbolicLink()) throw Object.assign(new Error("refusing to follow a symlink"), { code: "EPERM" });
+  if (!listed.isFile()) throw Object.assign(new Error("path is not a file"), { code: "EPERM" });
+  const real = fs.realpathSync(candidate);
+  const allowed = roots.map(root => fs.realpathSync(root));
+  if (!allowed.some(root => isInside(root, real))) throw Object.assign(new Error("path is outside the allowed directory"), { code: "EPERM" });
+  return real;
+}
+export async function transcriptRoots(directory, run, { env = process.env } = {}) {
+  const roots = [directory];
+  if (run?.backend === "codex" && typeof run.codexId === "string" && /^[A-Za-z0-9._-]+$/.test(run.codexId)) {
+    const { toolkit } = await loadToolkit({ env });
+    const root = path.join(toolkit.loadConfig(env).runsDir, "codex", run.codexId);
+    if (fs.existsSync(root)) roots.push(root);
+  }
+  return roots;
 }
 export function runDirectory(dataDir, runId) {
   if (typeof runId !== "string" || !runId.trim()) throw new Error("runId is required");
@@ -193,7 +215,7 @@ export function capText(text, limit = 40_000, tail = false) {
   return tail ? note + text.slice(-(limit - note.length)) : text.slice(0, limit - note.length) + note;
 }
 export function answerOf(directory, limit = 40_000, tail = false) {
-  try { return capText(fs.readFileSync(path.join(directory, "answer.txt"), "utf8"), limit, tail); }
+  try { return capText(fs.readFileSync(containedPath(path.join(directory, "answer.txt"), [directory]), "utf8"), limit, tail); }
   catch (e) { if (e.code === "ENOENT") return ""; throw e; }
 }
 export async function listRuns(dataDir, { limit = 20, backend } = {}) {

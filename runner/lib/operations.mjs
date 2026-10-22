@@ -10,7 +10,7 @@ import { reviewDiff, privateReview, routeReviewers, reviewPrompt, parseFindings,
 import { shot, deployWait, validateShot, validateDeploy } from "../../core/lib/browser-tasks.mjs";
 import { readProfile } from "./profile.mjs";
 import { resolveDataDir } from "./data-dir.mjs";
-import { atomicJson, readAsk, readJson, startReviewChild, runDirectory, waitRuns, FLEET_CLI } from "./jobs.mjs";
+import { atomicJson, containedPath, readAsk, readJson, startReviewChild, runDirectory, waitRuns, FLEET_CLI } from "./jobs.mjs";
 import { waitReviewChild } from "./job-recovery.mjs";
 
 const worker = fileURLToPath(new URL("../operation-job.mjs", import.meta.url));
@@ -128,5 +128,9 @@ export async function runOperation(directory, { env = process.env, handoff = fal
 }
 export function operationTranscript(directory, run) {
   const file = path.join(directory, run.kind === "review" ? "reviewers.json" : `${run.kind}.json`);
-  return `${fs.existsSync(file) ? fs.readFileSync(file, "utf8") : ""}\n\n${JSON.stringify(run.result ?? {})}\n\n${fs.readFileSync(path.join(directory, "prompt.txt"), "utf8")}`;
+  const read = target => {
+    try { return fs.readFileSync(containedPath(target, [directory]), "utf8"); }
+    catch (error) { if (error.code === "ENOENT") return ""; throw error; }
+  };
+  return `${fs.existsSync(file) ? read(file) : ""}\n\n${JSON.stringify(run.result ?? {})}\n\n${fs.readFileSync(containedPath(path.join(directory, "prompt.txt"), [directory]), "utf8")}`;
 }
