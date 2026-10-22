@@ -43,9 +43,10 @@ async function replaySpawn(t, { failed = false, hold = false, chatOnly = false }
     child.kill = () => { stop(); return true; };
     children.set(child.pid, child);
     const send = (frame) => child.stdout.write(`${JSON.stringify(frame)}\n`);
-    if (command === "taskkill.exe") {
+    const leaf = path.basename(command).toLowerCase();
+    if (leaf === "taskkill.exe") {
       queueMicrotask(() => { children.get(Number(args[1]))?.kill(); stop(); });
-    } else if (command === "git") {
+    } else if (leaf === "git" || leaf === "git.exe") {
       // Delegate's driver status query is mocked too; no git is executed.
       queueMicrotask(stop);
     } else if (args.includes("app-server")) {
@@ -276,5 +277,5 @@ test("replayed delegate records sandbox failure and does not run verification or
   assert.ok(calls[0].args.includes("mcp_servers.node_repl.enabled=false"));
   assert.ok(calls[0].args.includes('windows.sandbox="unelevated"'));
   assert.equal(requests.filter((request) => request.method === "turn/start").length, 1);
-  assert.ok(!calls.some((call) => call.command === "powershell.exe" || call.command === "/bin/sh"));
+  assert.ok(!calls.some((call) => ["powershell.exe", "pwsh.exe", "sh"].includes(path.basename(call.command).toLowerCase())));
 });

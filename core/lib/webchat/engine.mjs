@@ -1,4 +1,4 @@
-import { spawnWorker as spawn, workerEnv } from "../worker.mjs";
+import { spawnWorker as spawn, workerEnv, redactSecrets } from "../worker.mjs";
 import fs from "node:fs";
 
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -14,7 +14,7 @@ export function processExit(proc, timeoutMs = 5000) {
 
 export function launchLogin(chrome, profile, url, { detached = false, spawnChrome = spawn } = {}) {
   fs.mkdirSync(profile, { recursive: true });
-  return spawnChrome(chrome, [`--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", url], { env: workerEnv(), detached, stdio: "ignore", ...(!detached ? { windowsHide: false } : {}) });
+  return spawnChrome(chrome, [`--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", url], { env: workerEnv(redactSecrets()), detached, stdio: "ignore", ...(!detached ? { windowsHide: false } : {}) });
 }
 
 export function parseAdvisorArgs(argv) {
@@ -50,7 +50,7 @@ export class Browser {
       show ? "--window-position=80,80" : "--window-position=-2400,-2400",
       "about:blank",
     ];
-    const proc = spawnChrome(cfg.chrome, args, { env: workerEnv(), stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"], windowsHide: false });
+    const proc = spawnChrome(cfg.chrome, args, { env: workerEnv(redactSecrets()), stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"], windowsHide: false });
     let b;
     try { b = new Browser(proc, { menuText }); }
     catch (error) { const exited = processExit(proc); try { proc.kill(); } catch {} error.chromeStillRunning = !await exited; throw error; }

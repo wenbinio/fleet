@@ -44,3 +44,6 @@ the vendored commit are recorded in this file below.
   retained file was edited — all 7 remaining `src/*.js` files are byte-for-byte
   as of the vendored commit. If any file here is later edited, note the file
   and the change in this section.
+- **2026-10-22 — `src/worktree.js`:** `git` is resolved from absolute `PATH`
+  entries before `execFile`, so a worktree cannot plant `git` / `git.exe` in
+  the current directory and have Windows `SearchPath` run it. No other change.

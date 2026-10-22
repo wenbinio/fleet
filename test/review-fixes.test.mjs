@@ -120,8 +120,8 @@ test("root setup delegation configures Qwen with dry-run and idempotent reportin
 });
 test("Qwen health-first startup uses file stdio and an independent 240-second deadline", async t => {
   const f = fixture(t), calls = []; let started = false, clock = 0;
-  await ensureLocalReady({ env: f.env, runDir: f.root, fetch: async () => { if (!started) return offline(); return response({ status: "ok" }); },
-    spawnStarter: (exe, args, options) => { calls.push({ exe, args }); assert.deepEqual(options.stdio, ['ignore', options.stdio[1], options.stdio[1]]); assert.equal(typeof options.stdio[1], 'number'); assert.equal(options.windowsHide, true); assert.equal(options.env.FLEET_WORKER, '1'); started = true; return starterProcess(); }, now: () => clock, sleep: async ms => { clock += ms; } });
+  await ensureLocalReady({ env: { ...f.env, OPENROUTER_API_KEY: "sk-test-secret" }, runDir: f.root, fetch: async () => { if (!started) return offline(); return response({ status: "ok" }); },
+    spawnStarter: (exe, args, options) => { calls.push({ exe, args }); assert.deepEqual(options.stdio, ['ignore', options.stdio[1], options.stdio[1]]); assert.equal(typeof options.stdio[1], 'number'); assert.equal(options.windowsHide, true); assert.equal(options.env.FLEET_WORKER, '1'); assert.equal(options.env.OPENROUTER_API_KEY, undefined); started = true; return starterProcess(); }, now: () => clock, sleep: async ms => { clock += ms; } });
   assert.deepEqual(calls[0], { exe: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(f.folder, "Start-Qwen.ps1")] });
   assert.equal(calls.length, 1);
   fs.rmSync(path.join(f.folder, "checks/model.json"));

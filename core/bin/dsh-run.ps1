@@ -2,13 +2,14 @@
 [CmdletBinding()]
 param(
     [string]$Task,
+    [string]$Node = 'node',
     [string]$Cwd = (Get-Location).Path,
     [ValidateSet('deepseek-flash', 'deepseek-v4-pro')][string]$Model = 'deepseek-flash',
     [string]$SessionId,
     [Alias('h')][switch]$Help
 )
 if ($Help -or -not $Task) {
-    Write-Output 'dsh-run.ps1 -Task <text or path> [-Cwd DIR] [-Model deepseek-flash|deepseek-v4-pro] [-SessionId ID] [-Help]'
+    Write-Output 'dsh-run.ps1 -Task <text or path> [-Node node.exe] [-Cwd DIR] [-Model deepseek-flash|deepseek-v4-pro] [-SessionId ID] [-Help]'
     if ($Help) { exit 0 } else { exit 1 }
 }
 $ErrorActionPreference = 'Stop'
@@ -18,7 +19,7 @@ $overlay = Join-Path $repo 'deepseek/account.patch.yml'
 $temporary = $null
 $exitCode = 1
 try {
-    $exe = & node (Join-Path $repo 'lib/toolkit.mjs') dsh
+    $exe = & $Node (Join-Path $repo 'lib/toolkit.mjs') dsh
     if ($LASTEXITCODE -ne 0 -or -not $exe) { throw 'DeepSeek Harness not found; run node setup.mjs' }
     try { $taskIsFile = Test-Path -LiteralPath $Task -PathType Leaf } catch { $taskIsFile = $false }
     if ($taskIsFile) { $Task = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $Task).Path) }

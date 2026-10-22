@@ -9,7 +9,7 @@ import { constants as fsConstants, promises as fsp } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
-import { startAsk, listRuns, runDirectory, kindOf, storedKind, readAsk, answerOf, capText, transcriptSource, BACKENDS } from "../runner/lib/jobs.mjs";
+import { startAsk, listRuns, runDirectory, kindOf, storedKind, readAsk, answerOf, capText, containedPath, transcriptRoots, transcriptSource, BACKENDS } from "../runner/lib/jobs.mjs";
 import { startOperation, operationTranscript } from "../runner/lib/operations.mjs";
 import { accounts } from "../runner/lib/accounts.mjs";
 import { finalText } from "../runner/ask-job.mjs";
@@ -202,10 +202,15 @@ export function eventBeat(event) {
   return `${prefix}${oneLine(event.type ?? "event")}: ${oneLine(detail)}`.trim();
 }
 
+function openContained(file, roots) {
+  if (!file) return null;
+  try { return containedPath(file, roots); }
+  catch (error) { if (error.code === "ENOENT") return null; throw error; }
+}
 async function delegateStatus(dataDir, runDir) {
   const directory = await delegateDirectory(dataDir, runDir);
-  const state = await readJson(path.join(directory, "state.json"), "delegate state");
-  const beats = await eventBeats(path.join(directory, "events.jsonl"), 10);
+  const state = await readJson(containedPath(path.join(directory, "state.json"), [directory]), "delegate state");
+  const beats = await eventBeats(openContained(path.join(directory, "events.jsonl"), [directory]), 10);
   return { state, beats };
 }
 
@@ -293,8 +298,10 @@ export async function callTool(name, rawArguments, { env = process.env, dataDir,
     if (!storedKind(kind)) throw new Error("status is for jobs and delegate runs; use fleet_run for batches");
     const run = readAsk(directory);
     const source = await transcriptSource(directory, run, { env });
-    const tail = source.format === "text" ? await readTail(path.join(directory, "answer.txt"), 2000) : "";
-    const beats = source.format === "text" ? (tail ? [oneLine(tail)] : []) : await eventBeats(source.file, 10);
+    const roots = await transcriptRoots(directory, run, { env });
+    const answerFile = source.format === "text" ? openContained(path.join(directory, "answer.txt"), [directory]) : null;
+    const tail = answerFile ? await readTail(answerFile, 2000) : "";
+    const beats = source.format === "text" ? (tail ? [oneLine(tail)] : []) : await eventBeats(openContained(source.file, roots), 10);
     return { value: { runId: run.runId, backend: run.backend, model: run.model, status: run.status, ...(run.phase ? { phase: run.phase } : {}), ...(run.notice ? { notice: run.notice } : {}), elapsedSeconds: Math.max(0, Math.floor((Date.parse(run.endedAt ?? new Date().toISOString()) - Date.parse(run.startedAt)) / 1000)), beats: beats.slice(-10) }, json: true };
   }
   if (name === "fleet_transcript") {
@@ -303,7 +310,12 @@ export async function callTool(name, rawArguments, { env = process.env, dataDir,
     if (args.taskId !== undefined) throw new Error("taskId is for batch runs only");
     const run = kind === "ask" ? readAsk(directory) : null;
     const source = run ? await transcriptSource(directory, run, { env }) : { format: "events", file: path.join(directory, "events.jsonl") };
-    const text = source.format === "text" ? `Prompt:\n${await fsp.readFile(path.join(directory, "prompt.txt"), "utf8")}\n\nAnswer:\n${answerOf(directory)}${source.reasoning ? "\n\nReasoning:\n" + await readTail(path.join(directory, "reasoning.txt"), 80_000) : ""}${source.details ? "\n\n" + JSON.stringify(source.details) : ""}` : (await eventBeats(source.file)).join("\n");
+    const roots = await transcriptRoots(directory, run ?? {}, { env });
+    const reasoningFile = source.reasoning ? openContained(path.join(directory, "reasoning.txt"), [directory]) : null;
+    const reasoning = reasoningFile ? await readTail(reasoningFile, 80_000) : "";
+    const text = source.format === "text"
+      ? `Prompt:\n${await fsp.readFile(containedPath(path.join(directory, "prompt.txt"), [directory]), "utf8")}\n\nAnswer:\n${answerOf(directory)}${source.reasoning ? "\n\nReasoning:\n" + reasoning : ""}${source.details ? "\n\n" + JSON.stringify(source.details) : ""}`
+      : (await eventBeats(openContained(source.file, roots))).join("\n");
     return { value: capText(text), json: false };
   }
 }

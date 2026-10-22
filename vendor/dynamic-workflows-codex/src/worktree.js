@@ -10,12 +10,12 @@ import { promisify } from "node:util";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { workerEnv } from "../../../core/lib/worker.mjs";
+import { workerEnv, resolveBareCommand } from "../../../core/lib/worker.mjs";
 
 const exec = promisify(execFile);
 
 async function git(cwd, args) {
-  const { stdout } = await exec("git", args, { cwd, env: workerEnv(), maxBuffer: 16 * 1024 * 1024 });
+  const { stdout } = await exec(resolveBareCommand("git"), args, { cwd, env: workerEnv(), maxBuffer: 16 * 1024 * 1024 });
   return stdout.trim();
 }
 

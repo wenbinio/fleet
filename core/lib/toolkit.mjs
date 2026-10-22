@@ -120,11 +120,17 @@ export const isMain = url => process.argv[1] && url === pathToFileURL(path.resol
 
 // cmd shims require two parsing layers (cmd itself, then the shim's command).
 // Escape metacharacters even inside quotes; never interpolate arguments into PowerShell source.
+// Newlines and NUL are not metacharacters cmd.exe will keep inside one argument, so refuse them.
 function cmdArg(value) {
   return ('"' + String(value).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/g, '$1$1') + '"').replace(/([()%!^"<>&|;, *?])/g, '^$1').replace(/([()%!^"<>&|;, *?])/g, '^$1');
 }
+export function assertCmdShimArgs(exe, args) {
+  if (!/\.(?:cmd|bat)$/i.test(String(exe))) return;
+  if (args.some(value => /[\0\r\n]/.test(String(value)))) throw new Error("refusing newline or NUL arguments to a cmd shim");
+}
 export function launch(exe, args, options = {}) {
   if (!exe) throw new Error('Executable not found; run node setup.mjs');
+  assertCmdShimArgs(exe, args);
   if (/\.[cm]?js$/i.test(exe)) return spawn(process.execPath, [exe, ...args], { windowsHide: true, ...options });
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(exe)) {
     const command = exe.replace(/([()%!^"<>&|;, *?])/g, '^$1');
