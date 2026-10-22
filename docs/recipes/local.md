@@ -1,5 +1,7 @@
 # Local model (`local` backend): Lok's Qwen on D:
 
+Root precedence, first match: `FLEET_LOCAL_ROOT`, config `local.root`, legacy `local.folder`, then `D:/AI/Qwen3.8-Abliterated` on Windows only. Other platforms have no default and need an explicit root. Fleet does not copy the GGUF or import it into Ollama. Ollama is used only when a provider is configured with engine `ollama` or port 11434.
+
 Lok's own setup, not Ollama: `D:\AI\Qwen3.8-Abliterated` (Huihui-Qwen3.8-27B-abliterated, UD-IQ3_S, 11.95 GB),
 served by its bundled llama.cpp `llama-server` on `http://127.0.0.1:8088` (OpenAI-compatible `/v1`, model id
 `Huihui-Qwen3.8-27B-Abliterated`). His rule for it: **everything stays on D:**, so never import the GGUF into
