@@ -42,7 +42,7 @@ Create `runDir = ${dataDir}/runs/delegate-<filesystem-safe-timestamp>` and write
 }
 ```
 
-`repo`, `codexExe`, `task`, and `runDir` are required; `model`, `effort`, `isolation`, `windowsSandbox`, `verify`, and `isolated` are optional. Add `windowsSandbox` only when configured. `isolated` controls worktree creation and is separate from worker `isolation`. There is no `cwd` key and no `backend` key.
+`repo`, `codexExe`, `task`, and `runDir` are required; `model`, `effort`, `isolation`, `windowsSandbox`, `verify`, `isolated`, and `turnTimeoutMs` are optional. Add `windowsSandbox` only when configured. `turnTimeoutMs` is the per-turn cap in milliseconds (a positive number; default `600000`, ten minutes); raise it, for example to `1800000`, for a large task that should not be split. `isolated` controls worktree creation and is separate from worker `isolation`. There is no `cwd` key and no `backend` key.
 
 ## Spawn one narrator wrapper
 
@@ -54,7 +54,9 @@ Spawn exactly one narrator wrapper agent **in the background** (the main session
 4. Between event polls, check the wrapper's inbox for steering text relayed by the main session. Forward each instruction with `"<absolute nodeExe>" "${FLEET_ROOT}/runner/delegate.mjs" --steer "<runDir>" "<text>"`. Sleep briefly, then repeat.
 5. At terminal state, report files changed (the DELTA against the baseline you recorded), the advisory verification outcome (or that none ran), how the user can steer next time by telling the main session `tell it to ...`, and the run-directory path.
 
-The runner owns `events.jsonl`, `state.json`, and the `steer.inbox/` directory (one JSON file per message, written atomically); consume them through this contract rather than inventing another channel.
+The runner owns `events.jsonl`, `state.json`, and the `steer.inbox/` directory (one JSON file per message, written atomically); consume them through this contract rather than inventing another channel. Polling `state.json` is safe: on Windows an open reader blocks the runner's atomic replace, so the runner retries briefly and then writes in place. If a read of `state.json` does not parse, read it again on the next poll rather than treating the run as broken.
+
+If a turn runs past `turnTimeoutMs`, the runner interrupts it, records `failureReason: "turn_timeout"` and a remedy in state and summary, still runs the advisory verify on whatever the worker wrote, and ends `failed`. Report the files changed and the verify result as partial work, and suggest a higher `turnTimeoutMs` or a smaller follow-up task.
 
 If command results contain `setup refresh had errors`, the runner records `failureReason: "sandbox_setup_failed"` and a remedy in state and summary, then stops without another turn or advisory verify. Surface it: use `isolation: "plugins-off"` (or exec-only `ignore-user-config` with a model), close the Codex desktop app (it runs `node_repl.exe`), or explicitly opt in to `windowsSandbox: "unelevated"`, a weaker sandbox. Report any fallback notes.
 

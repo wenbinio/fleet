@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { atomicWrite, atomicWriteJson } from "./lib/atomic-write.mjs";
 import { resolveDataDir } from "./lib/data-dir.mjs";
 import { runTask } from "./task-runner.mjs";
 import { appServerArgs, validateWorkerConfig, workerIsolationNotes } from "./codex-flags.mjs";
@@ -438,28 +439,6 @@ function taskCacheKey(repoRealpath, baseSha, task, backend, model, effort, isola
   const identity = [repoRealpath, baseSha, task.spec, task.verify || "", backend, model || "", effort || "",
     isolation ?? "plugins-off", windowsSandbox ?? ""];
   return createHash("sha256").update(JSON.stringify(identity)).digest("hex");
-}
-
-async function atomicWrite(filePath, contents) {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
-  let handle;
-  try {
-    handle = await fsp.open(temporary, "wx");
-    await handle.writeFile(contents, "utf8");
-    await handle.sync();
-    await handle.close();
-    handle = null;
-    await fsp.rename(temporary, filePath);
-  } catch (error) {
-    await handle?.close().catch(() => {});
-    await fsp.rm(temporary, { force: true }).catch(() => {});
-    throw error;
-  }
-}
-
-async function atomicWriteJson(filePath, value) {
-  await atomicWrite(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 async function atomicAppendJsonLine(filePath, value) {

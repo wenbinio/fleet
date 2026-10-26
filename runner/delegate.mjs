@@ -9,10 +9,16 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { startCodexSession } from "../vendor/dynamic-workflows-codex/src/codexSession.js";
 import { appServerArgs, validateWorkerConfig, workerIsolationNotes } from "./codex-flags.mjs";
+import { atomicWriteJson } from "./lib/atomic-write.mjs";
 import { hasSandboxSetupFailure, SANDBOX_SETUP_REMEDY } from "./sandbox-failure.mjs";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30_000; // bounded idle tail; every run ends with this much silence, so keep it short
 const DEFAULT_POLL_MS = 2_000;
+const DEFAULT_TURN_TIMEOUT_MS = 600_000; // per turn; task.json turnTimeoutMs overrides
+// The runner interrupts a turn at its own deadline; the driver's cap is only a
+// backstop for an interrupt that never produces turn/completed.
+const TURN_TIMEOUT_GRACE_MS = 30_000;
+const TURN_TIMEOUT_REMEDY = "Raise turnTimeoutMs in task.json, or split the task into smaller steered turns. Files the worker already wrote are kept; review them with the advisory verify result.";
 const VERIFY_OUTPUT_LIMIT = 64 * 1024;
 const REPLAYED_TERMINAL = Symbol("delegate-replayed-terminal");
 const TERMINAL_STATUSES = new Set(["done", "interrupted", "failed"]);
@@ -51,28 +57,6 @@ function parseArgs(argv) {
   throw new CliError(USAGE);
 }
 
-async function atomicWrite(filePath, contents) {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
-  let handle;
-  try {
-    handle = await fsp.open(temporary, "wx");
-    await handle.writeFile(contents, "utf8");
-    await handle.sync();
-    await handle.close();
-    handle = null;
-    await fsp.rename(temporary, filePath);
-  } catch (error) {
-    await handle?.close().catch(() => {});
-    await fsp.rm(temporary, { force: true }).catch(() => {});
-    throw error;
-  }
-}
-
-async function atomicWriteJson(filePath, value) {
-  await atomicWrite(filePath, `${JSON.stringify(value, null, 2)}\n`);
-}
-
 async function pathExists(filePath) {
   try {
     await fsp.access(filePath, fsConstants.F_OK);
@@ -99,6 +83,9 @@ export async function readTask(taskPath) {
   if (raw.verify != null && typeof raw.verify !== "string") throw new CliError("verify must be a string when provided");
   if (raw.isolated != null && typeof raw.isolated !== "boolean") throw new CliError("isolated must be a boolean when provided");
   if (raw.codexArgs != null && !Array.isArray(raw.codexArgs)) throw new CliError("codexArgs must be an array when provided");
+  if (raw.turnTimeoutMs != null && !(typeof raw.turnTimeoutMs === "number" && Number.isFinite(raw.turnTimeoutMs) && raw.turnTimeoutMs > 0)) {
+    throw new CliError("turnTimeoutMs must be a positive number of milliseconds when provided");
+  }
   try {
     validateWorkerConfig(raw);
   } catch (error) {
@@ -295,6 +282,7 @@ export async function runDelegate(taskPath) {
   const interruptPath = path.join(runDir, "interrupt.flag");
   const idleTimeoutMs = parseDuration(process.env.DELEGATE_IDLE_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS);
   const pollMs = parseDuration(process.env.DELEGATE_POLL_MS, DEFAULT_POLL_MS);
+  const turnTimeoutMs = cfg.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
 
   await fsp.mkdir(runDir, { recursive: true });
   const eventHandle = await fsp.open(eventsPath, "a");
@@ -311,6 +299,7 @@ export async function runDelegate(taskPath) {
 
   let ioTail = Promise.resolve();
   let ioError = null;
+  let stateWriteError = null;
   let driver = null;
   let notificationListener = null;
   let transportListener = null;
@@ -326,9 +315,24 @@ export async function runDelegate(taskPath) {
     ioTail = next.catch((error) => { ioError ??= error; });
     return next;
   };
+  // state.json is a full snapshot, so a write lost to a reader holding the file
+  // is repaired by the next one; only the final write decides the outcome. A
+  // snapshot with a newer one queued behind it is skipped, so a held file (each
+  // write then waits out the retries) cannot back up a burst of notifications.
+  let stateSequence = 0;
+  const writeState = async (value, sequence) => {
+    if (sequence !== stateSequence) return;
+    try {
+      await atomicWriteJson(statePath, value);
+      stateWriteError = null;
+    } catch (error) {
+      stateWriteError = error;
+    }
+  };
   const persistState = () => {
     const value = snapshot();
-    return queueIo(() => atomicWriteJson(statePath, value));
+    const sequence = ++stateSequence;
+    return queueIo(() => writeState(value, sequence));
   };
   const transition = async (status, patch = {}) => {
     Object.assign(state, patch, { status, lastActivityAt: new Date().toISOString() });
@@ -337,9 +341,10 @@ export async function runDelegate(taskPath) {
   const appendEvent = (event, updateState = false) => {
     const line = `${JSON.stringify(event)}\n`;
     const value = updateState ? snapshot() : null;
+    const sequence = updateState ? ++stateSequence : 0;
     return queueIo(async () => {
       await eventHandle.write(line, null, "utf8");
-      if (value) await atomicWriteJson(statePath, value);
+      if (value) await writeState(value, sequence);
     });
   };
   const consumeControls = async (activeTurn) => {
@@ -365,6 +370,44 @@ export async function runDelegate(taskPath) {
       queuedPrompts.push(message);
     }, appendEvent);
     return { interrupted: false };
+  };
+
+  const runAdvisoryVerify = async () => {
+    if (!cfg.verify) return { interrupted: false };
+    await transition("verifying");
+    const verifyStartedAt = Date.now();
+    const verifyProcess = startVerify(cfg.verify, driver._worktree?.dir ?? repo);
+    let verifyInterrupted = false;
+    while (!verifyProcess.settled) {
+      await Promise.race([verifyProcess.completion, delay(pollMs)]);
+      if (verifyProcess.settled) break;
+      const control = await consumeControls(false);
+      if (control.interrupted) {
+        verifyInterrupted = true;
+        verifyProcess.child?.kill();
+      }
+      if (fatalTransport) {
+        verifyProcess.child?.kill();
+        throw fatalTransport;
+      }
+    }
+    const verifyResult = await verifyProcess.completion;
+    state.verify = {
+      ran: true,
+      passed: verifyResult.code === 0 && !verifyResult.signal && !verifyResult.error,
+      tail: tailText(verifyResult.output || verifyResult.error?.message || ""),
+    };
+    state.lastActivityAt = new Date().toISOString();
+    await appendEvent({
+      type: "verify",
+      at: state.lastActivityAt,
+      command: cfg.verify,
+      code: verifyResult.code,
+      signal: verifyResult.signal,
+      durationMs: Date.now() - verifyStartedAt,
+      ...state.verify,
+    }, true);
+    return { interrupted: verifyInterrupted };
   };
 
   await persistState();
@@ -423,7 +466,11 @@ export async function runDelegate(taskPath) {
         state.turns += 1;
         await transition("working");
 
-        const handle = await driver.beginTurn(prompt, { model: cfg.model, effort: cfg.effort });
+        const handle = await driver.beginTurn(prompt, {
+          model: cfg.model,
+          effort: cfg.effort,
+          timeoutMs: turnTimeoutMs + TURN_TIMEOUT_GRACE_MS,
+        });
         if (!handle?.turnId) throw new Error("turn/start did not return turn.id");
         const buffered = terminalNotes.get(handle.turnId);
         if (buffered) {
@@ -439,15 +486,30 @@ export async function runDelegate(taskPath) {
           return value;
         });
         let interrupted = false;
-        while (!settled) {
-          await Promise.race([completion, delay(pollMs)]);
-          if (settled) break;
-          const control = await consumeControls(true);
-          if (control.interrupted) {
-            interrupted = true;
-            await driver.interruptCurrent().catch(() => {});
+        let deadlinePassed = false;
+        let timedOut = false;
+        const turnClock = new AbortController();
+        const turnDeadline = delay(turnTimeoutMs, undefined, { signal: turnClock.signal })
+          .then(() => { deadlinePassed = true; }, () => {});
+        try {
+          while (!settled) {
+            await Promise.race([completion, delay(pollMs), turnDeadline]);
+            if (settled) break;
+            const control = await consumeControls(true);
+            if (control.interrupted) {
+              interrupted = true;
+              await driver.interruptCurrent().catch(() => {});
+            }
+            if (deadlinePassed && !interrupted) {
+              // The interrupted turn still emits turn/completed, which ends this loop.
+              timedOut = true;
+              interrupted = true;
+              await driver.interruptCurrent().catch(() => {});
+            }
+            if (fatalTransport) throw fatalTransport;
           }
-          if (fatalTransport) throw fatalTransport;
+        } finally {
+          turnClock.abort();
         }
         outcome ??= await completion;
         terminalNotes.delete(handle.turnId);
@@ -457,6 +519,17 @@ export async function runDelegate(taskPath) {
           throw new Error(`sandbox_setup_failed: ${SANDBOX_SETUP_REMEDY}`);
         }
 
+        if (timedOut && outcome?.status !== "completed") {
+          // A timed-out turn has usually written files already, so the advisory
+          // verify still tells the caller what state it left the repo in.
+          state.failureReason = "turn_timeout";
+          state.remedy = TURN_TIMEOUT_REMEDY;
+          finalError = new Error(`turn_timeout: the turn ran past turnTimeoutMs (${turnTimeoutMs} ms) and was interrupted`);
+          await runAdvisoryVerify();
+          finalStatus = "failed";
+          stop = true;
+          break;
+        }
         if (interrupted || outcome?.status === "interrupted") {
           finalStatus = "interrupted";
           stop = true;
@@ -471,45 +544,10 @@ export async function runDelegate(taskPath) {
           break;
         }
 
-        if (cfg.verify) {
-          await transition("verifying");
-          const verifyStartedAt = Date.now();
-          const verifyProcess = startVerify(cfg.verify, driver._worktree?.dir ?? repo);
-          let verifyInterrupted = false;
-          while (!verifyProcess.settled) {
-            await Promise.race([verifyProcess.completion, delay(pollMs)]);
-            if (verifyProcess.settled) break;
-            const control = await consumeControls(false);
-            if (control.interrupted) {
-              verifyInterrupted = true;
-              verifyProcess.child?.kill();
-            }
-            if (fatalTransport) {
-              verifyProcess.child?.kill();
-              throw fatalTransport;
-            }
-          }
-          const verifyResult = await verifyProcess.completion;
-          state.verify = {
-            ran: true,
-            passed: verifyResult.code === 0 && !verifyResult.signal && !verifyResult.error,
-            tail: tailText(verifyResult.output || verifyResult.error?.message || ""),
-          };
-          state.lastActivityAt = new Date().toISOString();
-          await appendEvent({
-            type: "verify",
-            at: state.lastActivityAt,
-            command: cfg.verify,
-            code: verifyResult.code,
-            signal: verifyResult.signal,
-            durationMs: Date.now() - verifyStartedAt,
-            ...state.verify,
-          }, true);
-          if (verifyInterrupted) {
-            finalStatus = "interrupted";
-            stop = true;
-            break;
-          }
+        if ((await runAdvisoryVerify()).interrupted) {
+          finalStatus = "interrupted";
+          stop = true;
+          break;
         }
 
         const control = await consumeControls(false);
@@ -559,8 +597,10 @@ export async function runDelegate(taskPath) {
     if (notificationListener) driver?.client.off("notification", notificationListener);
     if (transportListener) driver?.client.off("transport", transportListener);
     await ioTail;
-    if (!TERMINAL_STATUSES.has(state.status) || state.status !== finalStatus) {
-      await transition(finalStatus).catch((error) => { finalError ??= error; finalStatus = "failed"; });
+    await transition(finalStatus);
+    if (stateWriteError) {
+      finalError ??= stateWriteError;
+      finalStatus = "failed";
     }
     const filesChanged = await gitStatus(repo).catch(() => []);
     await appendEvent({ type: "delegate-summary", filesChanged, verify: state.verify, notes: state.notes,

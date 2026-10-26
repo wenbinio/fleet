@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -196,6 +196,91 @@ test("delegate streams events, consumes steering, and reuses its warm thread", {
   assert.equal(turns.length, 2);
   assert.equal(new Set(turns.map((event) => event.threadId)).size, 1);
   assert.equal(events.at(-1).type, "delegate-summary");
+});
+
+test("delegate survives a reader holding state.json, records turn_timeout, and still verifies", { timeout: STEP_TIMEOUT_MS * 2 }, async (t) => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "fleet-delegate-timeout-"));
+  t.after(() => rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+
+  const repo = path.join(tempRoot, "repo");
+  const runDir = path.join(tempRoot, "delegate-run");
+  await mkdir(repo, { recursive: true });
+  await run("git", ["init"], { cwd: repo });
+
+  const taskPath = path.join(tempRoot, "task.json");
+  await writeFile(taskPath, JSON.stringify({
+    repo,
+    codexExe: process.execPath,
+    codexArgs: [MOCK_APP_SERVER, "app-server", "--listen", "stdio://"],
+    // The mock writes the file, then never completes the turn on its own.
+    task: [
+      "MOCK_WAIT_FOR_INTERRUPT",
+      "```mock-file partial.txt",
+      "written before the timeout",
+      "```",
+    ].join("\n"),
+    runDir,
+    turnTimeoutMs: 1500,
+    verify: "node --version",
+  }, null, 2), "utf8");
+
+  // A narrator polling state.json: on Windows every open handle refuses the
+  // runner's rename, so keep one open most of the time.
+  const statePath = path.join(runDir, "state.json");
+  let narrating = true;
+  let reads = 0;
+  const narrator = (async () => {
+    while (narrating) {
+      const handle = await open(statePath, "r").catch(() => null);
+      if (handle) {
+        reads += 1;
+        await delay(40);
+        await handle.close();
+      }
+      await delay(5);
+    }
+  })();
+  t.after(() => { narrating = false; return narrator; });
+
+  const child = spawn(process.execPath, [DELEGATE, "--start", taskPath], {
+    cwd: ROOT,
+    env: { ...process.env, DELEGATE_IDLE_TIMEOUT_MS: "200", DELEGATE_POLL_MS: "20" },
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+  child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+  t.after(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  });
+
+  const outcome = await waitForExit(child, () => `${stdout}\n${stderr}`);
+  narrating = false;
+  await narrator;
+  assert.ok(reads > 0, "the narrator held state.json open during the run");
+  assert.doesNotMatch(stderr, /EPERM|EACCES|EBUSY/);
+  assert.match(stderr, /turn_timeout/);
+  assert.deepEqual(outcome, { code: 1, signal: null });
+
+  const state = await readJson(statePath);
+  assert.equal(state.status, "failed");
+  assert.equal(state.failureReason, "turn_timeout");
+  assert.match(state.remedy, /turnTimeoutMs/);
+  assert.equal(state.turns, 1);
+  assert.equal(state.verify?.ran, true);
+  assert.equal(state.verify?.passed, true);
+  assert.match(await readFile(path.join(repo, "partial.txt"), "utf8"), /^written before the timeout\n$/);
+
+  const events = (await readFile(path.join(runDir, "events.jsonl"), "utf8")).trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
+  assert.equal(events.filter((event) => event.type === "verify").length, 1);
+  const summary = events.at(-1);
+  assert.equal(summary.type, "delegate-summary");
+  assert.equal(summary.failureReason, "turn_timeout");
+  assert.equal(summary.verify.passed, true);
+  assert.deepEqual(summary.filesChanged, ["?? partial.txt"]);
+  assert.deepEqual((await readdir(runDir)).filter((name) => name.endsWith(".tmp")), [], "no temporary state files are left behind");
 });
 
 test("--steer rejects a completed run", async (t) => {

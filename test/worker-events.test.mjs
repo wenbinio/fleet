@@ -205,6 +205,20 @@ test("configuration validators reject isolation and sandbox typos before reposit
   assert.equal(parseArgs(["--smoke", "--allow-unelevated"]).allowUnelevated, true);
 });
 
+test("delegate task turnTimeoutMs must be a positive number of milliseconds", async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "fleet-validation-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const taskPath = path.join(cwd, "task.json");
+  const task = { repo: cwd, codexExe: "codex", task: "test", runDir: cwd };
+  for (const turnTimeoutMs of [0, -1, "600000", null]) {
+    await writeFile(taskPath, JSON.stringify({ ...task, turnTimeoutMs }));
+    if (turnTimeoutMs === null) assert.equal((await readTask(taskPath)).turnTimeoutMs, null);
+    else await assert.rejects(readTask(taskPath), /turnTimeoutMs must be a positive number/);
+  }
+  await writeFile(taskPath, JSON.stringify({ ...task, turnTimeoutMs: 1_800_000 }));
+  assert.equal((await readTask(taskPath)).turnTimeoutMs, 1_800_000);
+});
+
 test("replayed transports apply every isolation mode and sandbox override with model/effort pinning", async (t) => {
   const { cwd, calls, requests } = await replaySpawn(t);
   for (const isolation of [undefined, "plugins-off", "ignore-user-config", "none"]) {
