@@ -2,17 +2,17 @@
 
 DeepSeek's official desktop app ships a CLI at
 `%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd`. Run it from PowerShell; quoting
-through Bash `cmd //c` breaks on the spaces in that path. `bin/dsh-run.ps1` wraps it.
+through Bash `cmd //c` breaks on the spaces in that path. `core/bin/dsh-run.ps1` wraps it. The script lives in `core/bin`, so its repo root is `core/` and the account patch it loads is `core/deepseek/account.patch.yml`.
 
 ## Account login, not an API key
 
 The stock `headless` profile expects an API key: it uses the `deepseek-official` provider and switches off
 `credentials`, `authorization` and `deepseek-account`, so a plain run on an account login fails with
-`MISSING_CREDENTIAL`. `deepseek/account.patch.yml` turns those three back on and sets the default model to the
+`MISSING_CREDENTIAL`. `core/deepseek/account.patch.yml` turns those three back on and sets the default model to the
 `deepseek-account` provider. Your own profile files under `~/.dsh` stay untouched.
 
 ```powershell
-& $dsh --profile headless --patch <repo>\deepseek\account.patch.yml --json "task"
+& $dsh --profile headless --patch <repo>\core\deepseek\account.patch.yml --json "task"
 ```
 
 - Run it from the folder it may edit (workspace-write sandbox, no approval prompts inside it).

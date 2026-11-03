@@ -1,5 +1,7 @@
 # Brief: cross-model review, local models, screenshots and deploy checks (2026-10-21)
 
+> Historical work order from the agent-toolkit checkout. `plugins/fleet` in the text below is this repository's root.
+
 Repo `D:/claude-work/agent-toolkit`, work in `plugins/fleet` (the source of truth; it is pushed to its own repo as
 a subtree). Usual rules: no commits, no live CLI/network/browser/GPU/model runs, Node built-ins only; Claude runs
 the tests and the live checks. Every new tool description is one short sentence; always-on tokens matter.

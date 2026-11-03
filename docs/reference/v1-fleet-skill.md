@@ -5,6 +5,8 @@ description: Use when the user wants Codex/GPT-5.6-Sol/Codex CLI to execute codi
 
 # Codex Fleet
 
+> Archived personal skill from before the plugin. The live skills are `skills/ask`, `skills/fan`, `skills/dispatch`, `skills/delegate`, and `skills/setup` in [wenbinio/fleet](https://github.com/wenbinio/fleet). The Windows workflow path below is not in this repository.
+
 Claude plans, reviews, and merges; Codex CLI (`gpt-5.6-sol` @ xhigh) writes the code. Engine: `C:\Users\<user>\Downloads\claude\.claude\workflows\codex-fleet.js`.
 
 ## Dispatch

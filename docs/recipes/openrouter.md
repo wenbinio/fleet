@@ -5,7 +5,7 @@ Providers are entries in `~/.agent-toolkit/config.json` → `providers` (`name`,
 `keyFile`, `keyEnv`); OpenRouter (`https://openrouter.ai/api/v1`) is the first. Other services are added as
 entries, never as code.
 
-Use `fleet_ask` with `backend: "api"`, or `bin/api-run`. Exit codes for `api-run`: 0 done, 1 failed, 3 denied
+Use `fleet_ask` with `backend: "api"`, or `node core/lib/runners.mjs api-run <prompt-file>`. Exit codes for `api-run`: 0 done, 1 failed, 3 denied
 (bad or management key), 4 empty, 5 rate-limited or out of free requests for the day.
 
 ## The key
@@ -25,7 +25,7 @@ Use `fleet_ask` with `backend: "api"`, or `bin/api-run`. Exit codes for `api-run
 - No model, `free`, `auto` or `openrouter/free` → the **free router**. It picks a different free model on each
   call, so the run records the model that actually answered (the response's `model`, for example
   `nvidia/nemotron-3.5-super-vl:free`).
-- An id ending in `:free` → that free model. `fleet.mjs models --free --n 3` picks free models from distinct
+- An id ending in `:free` → that free model. `node runner/fleet.mjs models --free --n 3` picks free models from distinct
   vendors for a fan.
 - Anything else is **paid**, including `openrouter/auto` (it can route to paid models). A paid model runs only when
   the job names its exact id **and** sets `maxCostUsd`. Paid use needs a reason in the brief.

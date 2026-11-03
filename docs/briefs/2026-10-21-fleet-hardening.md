@@ -1,5 +1,7 @@
 # Brief: CI, Node 24 baseline, MCP lifecycle fixes, reproducible audio (2026-10-21)
 
+> Historical work order from when this tree lived at `plugins/fleet` inside agent-toolkit. Those paths are the repository root here (`.github/workflows/ci.yml`, `install.mjs`). Pinning GitHub Actions to a major tag, not a commit SHA, is still the instruction in this brief.
+
 From an outside review Lok forwarded. Its verdict, which Claude agrees with: keep the zero-dependency Node ESM core,
 native `node --test` tests and the simple viewer — no framework, containers, SDK or Playwright rewrite. Work in
 `plugins/fleet` (plus the matching agent-toolkit root files where named). Usual rules: no commits, no network, no

@@ -5,7 +5,7 @@ with Lok's SuperGrok login. The official installer is on [docs.x.ai/build/overvi
 `irm https://x.ai/cli/install.ps1 | iex` (Windows) or `curl -fsSL https://x.ai/cli/install.sh | bash`. It runs a
 remote script, so install only on Lok's say-so. Local docs come with it: `~/.grok/docs/user-guide/`.
 
-Use `bin/grok-run` (or `fleet_ask` with `backend: "grok"`), not raw `grok -p`. **On this machine Grok is read-only,
+Use `node core/lib/runners.mjs grok-run <prompt-file> --json` (or `fleet_ask` with `backend: "grok"`), not raw `grok -p`. **On this machine Grok is read-only,
 like agy.** Code goes to Codex.
 
 ## The traps (all tested 2026-10-20)

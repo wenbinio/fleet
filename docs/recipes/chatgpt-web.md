@@ -4,10 +4,10 @@ Uses the chatgpt.com chat allowance, separate from Codex and API usage. Agents m
 prompt at a time. Default pacing is 20 seconds between sent prompts and 30 prompts per rolling hour.
 
 ```bash
-bin/chatgpt-web login
-bin/chatgpt-web check
-bin/chatgpt-web probe
-bin/chatgpt-web ask prompt.md --files context.txt --model strongest --out answer.md --timeout 1200
+node core/lib/webchat/chatgpt.mjs login
+node core/lib/webchat/chatgpt.mjs check
+node core/lib/webchat/chatgpt.mjs probe
+node core/lib/webchat/chatgpt.mjs ask prompt.md --files context.txt --model strongest --out answer.md --timeout 1200
 ```
 
 Lok signs in manually in the visible login window, then closes it. The private Chrome profile and `state.json`
@@ -31,7 +31,7 @@ Fleet uses `backend: "chatgpt"` with `prompt` or `promptFile`, `files`, `model`,
 also accepts `--timeout SECONDS` and `--keep-chat`. Terminal outcomes are `done`, `failed`, `signed_out`, `limit`, and `paced` (runner exits
 0, 1, 3, 4, and 5). `waiting_for_lok` remains live and prints a wait notice when a human verification check needs Lok.
 
-The selectors in `lib/webchat/chatgpt.mjs`'s `C` object use the probed composer, model radios, power slider and
+The selectors in `core/lib/webchat/chatgpt.mjs`'s `C` object use the probed composer, model radios, power slider and
 assistant Markdown root, with compatibility fallbacks. A reply finishes only after a newer assistant turn is
 marked complete and the Stop button is absent. Probe dumps composer candidates, buttons, picker items, file inputs, assistant attributes and notices;
 failures name the relevant `C` key. A CAPTCHA is brought on screen for Lok, never clicked or worked around.

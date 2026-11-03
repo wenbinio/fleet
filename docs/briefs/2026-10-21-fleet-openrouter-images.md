@@ -1,5 +1,7 @@
 # Brief: OpenRouter image generation in the `image` backend (2026-10-21)
 
+> Historical work order. `plugins/fleet` in the text below is this repository's root.
+
 Lok: "Add image generation for OpenRouter in." Work in `plugins/fleet`. Usual rules: no commits, no live network or
 paid calls (Claude does the one real generation), Node built-ins only. Codex (Sol) stays the default image path.
 

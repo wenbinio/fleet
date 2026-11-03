@@ -1,271 +1,223 @@
 # Fleet
 
-Version **0.15.1**
+Version **0.15.1**. Public repository, [MIT](LICENSE).
 
-## New device, in three steps
+Fleet is one MCP server, plus skills and a small rules block, that runs many model backends from one menu and one run history. Claude Code also gets a plugin: skills, two subagents, and a merge-guard hook. Codex, Grok, agy, Cursor, and any other MCP client use the same server.
 
-1. Install Node 24 LTS or newer and git, then `git clone https://github.com/wenbinio/fleet.git` (private). Prefer an even-numbered LTS release.
-2. Tell any agent (Claude Code, Codex, Grok…): "read AGENTS.md in the fleet folder and set fleet up". It runs
-   `node install.mjs --plan`, applies the safe part, and hands you one short list: sign-ins, the OpenRouter key
-   (hidden prompt), optional sound downloads.
-3. Do that list, then let it rerun the plan until everything says `done`.
+Backends: **codex**, **agy**, **grok**, **deepseek**, **chatgpt** (the web app), **api** (OpenRouter), **local** (Qwen via llama.cpp), **image**, **advisor** (Gemini web / Argon), and **sound** (local Stable Audio Open or MOSS). A profile can turn any of them off. Disabled backends leave the tool schema and cannot start jobs.
 
-Lost a subscription? `node install.mjs --apply --off grok`. Moving harness? `--apply --host codex`.
+The old Claude→Codex-only plugin lived in `wenbinio/claudeorchestratortocodex` and stopped at 0.6.2. That repository was imported here and retired. This tree is the product: several backends, any harness, and the original verified-Codex dispatch path still available as one workflow.
 
-## What it is
+## Install
 
-Fleet is self-contained: Claude Code gets its plugin, skills and merge guard; Codex, Grok, agy, Cursor and other
-MCP clients use the same server and run history. No agent-toolkit checkout is required after splitting this folder.
+Requirements: Node 24 LTS or newer (even-numbered LTS; odd majors warn but still run), and git. `package.json` sets `"node": ">=24"`.
 
 ```bash
+git clone https://github.com/wenbinio/fleet.git
+cd fleet
 node install.mjs --plan --json
-node install.mjs --apply --profile lok --host claude --host codex --host grok
-node install.mjs --apply --profile minimal --host codex
-node install.mjs --apply --off grok
-node install.mjs --remove --host codex
+node install.mjs --apply
 ```
 
-`lok` enables all backends; `minimal` enables Codex and API only. Machine overrides live in
-`$FLEET_HOME/fleet/profile.json`. Disabled backends disappear from MCP schemas, menus and CLI help, and cannot
-start jobs. Removal unregisters selected hosts and removes owned links/managed rules; it keeps history unless
-`--purge` is explicit. Generic clients receive configuration and rule snippets to paste and remove manually.
+`--plan` only reports. Each step is `done`, `auto`, `warn`, or `needs-you`. `--apply` performs the `auto` steps. It does not log in, install remote CLIs, change `PATH`, download models, or type an API key.
 
-`lok` includes Claude, Codex, Grok and agy hosts and uses `autoApprove: "read-only"`; `minimal` uses `"none"`.
-Only fleet tools annotated read-only are approved in Codex and agy. Existing Codex tool tables are preserved,
-including explicit prompt settings. Claude stays interactive; Grok has no documented per-tool approval rule.
-Applying `none` or removing a host deletes those read-only grants for the selected host. Other rules and
-mutating-tool approvals are untouched; the installer never grants ask, steer, interrupt, review, shot or deploy-wait.
-The first change to each settings file creates a `.fleet-backup` containing its original bytes.
-
-The installer reports `done`, `auto`, and `needs-you` steps. It never performs logins, remote tool installations,
-PATH changes or sound downloads. `--set-key openrouter` uses a hidden Windows secure prompt and DPAPI; elsewhere
-set `OPENROUTER_API_KEY` privately. `--with sound` prints separate SAO/MOSS venv and model download recipes.
-Remote agy/DeepSeek installer commands are not bundled: follow their official installer, then the reported login
-step. agy gets MCP only until a documented rules/skills location is available.
-Sound recipes use the bundled `backends/sound/{sao,moss}/requirements.lock.txt` files. SAO requires Python 3.13
-(captured on 3.13.12) and CUDA 12.4 wheels; MOSS requires Python 3.12 (captured on 3.12.15), `uv` and CUDA 12.8
-wheels with `unsafe-best-match`. Existing configured venvs are retained and checked for the required minor.
-MOSS source is checked out at `934d6826b084c46a0d033402174d5f8ac4ed2519` and installed editable with `--no-deps`;
-do not upgrade its pinned Torch, Transformers or NumPy. Downloads use SAO revision
-`f21265c1e2710b3bd2386596943f0007f55f802e` and MOSS revision `e35df4d82fbe87fcd5d14e5d100e349c0c3c076d`.
-These are manual `needs-you` steps, never installer actions. The bundled SAO loader also uses its pinned revision.
-Web backend checks read saved state/config and resolve Chrome's path; they never launch Chrome, including
-for a version query.
-
-`FLEET_HOME` defaults to `~/.agent-toolkit`; the old `AGENT_TOOLKIT_HOME` override still works. Runtime config,
-keys, browser profiles and model caches retain their existing locations. Shared fleet data is now `fleet/` within
-that home, regardless of `CLAUDE_PLUGIN_DATA`. First use copies the old
-`~/.claude/plugins/data/fleet-agent-toolkit` folder into an empty shared folder and keeps the original. Old run paths
-remain readable; the merge guard and verdict writer use legacy approvals when only the old store has them.
-Each MCP/CLI startup also copies any missing legacy run folders, leaving existing shared runs and originals intact.
-
-Every child process receives `FLEET_WORKER=1`. Workers retain read-only fleet tools but cannot start, steer or
-interrupt fleet jobs through MCP; ask, review, shot and deploy-wait CLI commands refuse them. Codex workers disable fleet MCP per invocation
-unless user configuration is already ignored. Grok's bundled local documentation only describes persistent MCP
-disable commands, so its worker restriction uses the inherited environment without editing Grok configuration.
-
-Runtime layout: `core/lib/`, `core/bin/`, `core/deepseek/`, `backends/advisor/`, and bundled sound scripts under
-`backends/sound/`. Configured advisor and sound paths remain authoritative. In agent-toolkit, all old `bin/`,
-`lib/`, and advisor launch paths remain compatibility shims; root `setup.mjs` delegates its fleet steps here.
-
-## Review, local inference and browser checks
-
-`fleet_review` / `fleet review` sends an inline diff to several reviewers and returns a background wait command.
-Wait and `fleet_run` show agreed findings; `fleet_transcript` retains individual answers and failures. Reviews marked
-private, or matching profile `privatePaths`, replace free API reviewers with a ready local model or drop them with a notice.
-
-`fleet ask --backend local` uses the existing verified Qwen / llama.cpp installation selected by
-`FLEET_LOCAL_ROOT` > config `local.root` > legacy `local.folder` > `D:/AI/Qwen3.8-Abliterated` (Windows only).
-Other platforms require an explicit root. The server uses `127.0.0.1:8088`, with no key or provider cost. It starts through `Start-Qwen.ps1`
-when needed, never opens chat, and sleeps after five idle minutes. Low free VRAM is an offload note, not a refusal;
-sound waits until Qwen sleeps. Startup health polling has a separate 240-second deadline; generation defaults to
-20 minutes (`timeout` / `--timeout` in seconds). `fleet_status` shows startup and generation phases.
-Optional effort is low, medium or high. Ollama remains an explicit alternative;
-fleet never imports the GGUF or downloads another copy.
-
-`fleet_shot` / `fleet shot` saves responsive PNGs; `fleet_deploy_wait` / `fleet deploy-wait` waits for a marker and
-optionally reports Workers Builds checks. Both use fresh headless Chrome profiles over DevTools pipes and delete them
-after use. They never attach to an existing browser or deploy anything. See [usage and configuration](docs/recipes/review-local-shot.md).
-
-`image` uses Codex Sol by default. For paid OpenRouter images, set `provider: "openrouter"`, an exact model id
-and `maxCostUsd`; fleet checks endpoint prices first and saves decoded image artifacts and actual cost. The cap
-checks an estimate, not a guaranteed charge. `fleet_accounts` lists image prices after the Codex row.
-See [OpenRouter image options and examples](docs/recipes/openrouter.md#images).
-
-The existing Claude dispatch workflow follows.
-
-**Claude plans, reviews, and integrates; Codex writes the code — and nothing lands until an adversarial reviewer independently re-runs the tests and passes it.**
-
-Fleet is a Claude Code plugin that treats LLM-generated code as an untrusted supply chain. You describe the work; Claude drafts grounded task specs and dispatches OpenAI Codex (`gpt-5.6-sol`) workers; each worker runs in its own isolated Git worktree; the Claude driver verifies the result *outside* Codex's sandbox; a separate adversarial reviewer re-runs the verification independently before anything is approved; and only approved work is integrated — landing as one verified, staged diff in your working tree, exactly like a native Claude Code edit.
-
-```text
-you describe work
-   └─ Claude writes grounded, single-concern task specs
-        └─ Codex workers (parallel, isolated worktrees) write code
-             └─ driver verifies OUTSIDE Codex's sandbox
-                  └─ adversarial reviewer re-runs verify independently → approve / needs_work / reject
-                       └─ only approved branches integrate → one staged, verified diff in your tree
+```bash
+node install.mjs --apply --profile lok          # all backends; hosts claude, codex, grok, agy
+node install.mjs --apply --profile minimal      # codex + api; host claude; no auto-approve
+node install.mjs --apply --host codex           # add one harness
+node install.mjs --apply --off grok             # a subscription lapsed
+node install.mjs --remove --host codex          # unregister that host
+node install.mjs --remove --purge               # also delete shared fleet data
+node install.mjs --set-key openrouter           # Windows: hidden prompt, DPAPI file
+node install.mjs --with sound                   # print the manual sound recipe; does not download
 ```
 
-## Why this instead of…
+Hosts are `claude`, `codex`, `grok`, `agy`, `cursor`, and `generic`. `generic` prints MCP JSON to paste. agy gets the MCP server only, until it has a documented place for rules and skills.
 
-**…just telling Codex to do it?** A bare `codex exec` gives you code and a hope. Fleet gives you code plus an independent, adversarial gate: the reviewer trusts only the diff, re-runs the tests itself, and rejects scope creep — and the SHA-keyed merge guard blocks any `codex/*` branch from merging through Claude's tools until that gate has recorded an `approve` for the branch's exact tip. Work that fails verification is parked on its branch, not silently merged.
+What you still do yourself (`needs-you`):
 
-**…[scasella/claude-dynamic-workflows-codex](https://github.com/scasella/claude-dynamic-workflows-codex)?** That project — whose app-server transport this one vendors, with attribution intact — is a general workflow-DSL runtime for running fleets of Codex workers over research, triage, and brainstorm tasks. Fleet is narrower and git-native: it is a code-**delivery** pipeline. Isolated worktrees per task, mandatory independent verification, adversarial review, SHA-keyed merge gating, and stage-ladder integration that lands a clean diff in your tree. It answers a different question — not "how do I orchestrate Codex workers?" but "how do I let an LLM write code into my repo without trusting a word of it?"
+| Backend | Command |
+| --- | --- |
+| codex, image | `codex login` |
+| agy | install the Antigravity CLI, then `agy` |
+| grok | install from the xAI docs, then `grok login` |
+| deepseek | install DeepSeek Harness and sign in |
+| chatgpt | `node core/lib/webchat/chatgpt.mjs login` |
+| advisor | `node backends/advisor/advisor.mjs login` |
+| api | `node install.mjs --set-key openrouter` on Windows, or set `OPENROUTER_API_KEY` anywhere else |
+| local | point `FLEET_LOCAL_ROOT` or `local.root` at an existing Qwen install. Do not copy the GGUF |
+| sound | the printed recipe (several GB, pinned revisions) |
 
-Nobody else in this niche treats the model's output as an untrusted supply chain. That is the whole point.
+`--set-key` stores the OpenRouter key with Windows DPAPI. The key is not an argument, not printed, and not written into the installer receipt. Elsewhere, set `OPENROUTER_API_KEY` in a private shell or secret store. Do not paste it into chat.
 
-## Quickstart
+### Claude Code plugin
 
-Three commands in Claude Code get you from zero to dispatching:
+From an interactive Claude Code session, the marketplace in this repo is `agent-toolkit` and the plugin is `fleet`:
 
 ```text
-/plugin marketplace add wenbinio/claudeorchestratortocodex
-/plugin install fleet@wenbinio
+/plugin marketplace add wenbinio/fleet
+/plugin install fleet@agent-toolkit
 /fleet:setup
 ```
 
-The `/plugin` commands need an **interactive** Claude Code session (or use the desktop app's Plugins browser: Code tab → **+** → Plugins — no terminal needed). If the new skills don't appear immediately after install, run `/reload-plugins` or start a fresh session.
+`wenbinio/claudeorchestratortocodex` is the retired pre-split repo. Do not add it.
 
-For everyday work, delegate one task live and steer it mid-flight:
-
-```text
-/fleet:delegate refactor the parser to use dataclasses — watch it work, steer it mid-flight
-```
-
-Use dispatch when you want a batch:
-
-```text
-/fleet:dispatch
-```
-
-### Quick single-task use
-
-```text
-/fleet:solo fix the failing date parse in utils/dates.py
-```
-
-`solo` trades the multi-branch ladder for speed; review stays on by default.
-
-The three tiers are: `delegate` (live, steerable, your tree, you review) / `solo` (isolated, verified, adversarially reviewed) / `dispatch` (parallel batches, full pipeline).
-
-`setup` runs once per machine: it discovers your Codex CLI, verifies non-interactive auth **and successful shell execution**, probes the runner backend, and writes the passing worker settings to machine-local config in the plugin data directory. `dispatch` plans the tasks, runs the fleet, records verdicts, and integrates only approved branches.
-
-## Requirements
-
-- Claude Code
-- Codex CLI — installed through the desktop app, or with `npm i -g @openai/codex`
-- A ChatGPT login, or an `OPENAI_API_KEY`
-- Git
-- Node ≥ 18 (optional but recommended — enables the runner and its app-server backend; without it the plugin falls back to Agent-tool orchestration of the same pipeline)
-
-Without any Codex auth at all, the plugin still runs: it falls back to Claude subagents implementing the tasks under the *same* worktree, verification, review, and integration pipeline.
-
-## Architecture at a glance
-
-- **Four skills** — `delegate` (live, in your tree), `solo` (isolated + verified + reviewed), `dispatch` (parallel batches), and `setup` (once-per-machine bootstrap).
-- **One runner-first lifecycle** (`runner/task-runner.mjs`): worktree → Codex turn(s) → quiescence → verify → one correction round → checked commit → transcript. Two transports sit behind it — **app-server** (sessionful Codex threads over `codex app-server` JSON-RPC; selected when Node ≥ 18 and the probe passes) and **exec** (`codex exec` shelling). The former Workflow-tool engine survives only as `docs/reference/v2-workflow-engine.js`, a historical, non-normative reference.
-- **Two agents** — `codex-driver` (orchestrates and verifies, never edits source itself) and `fleet-reviewer` (adversarial; tools mechanically restricted to no-write; must re-run verify).
-- **One merge-guard hook** (`Bash` + `PowerShell` scripts) — a PreToolUse seatbelt that blocks Claude-tool merges of `codex/*` branches whose tip SHA has no recorded `approve`.
-- **Persistent data-directory state** — `config.json`, `fleet-log.jsonl`, `approved.json`, and per-worker files under `transcripts/`, all outside your repo.
-- **Vendored third-party code** under `vendor/` (see its `NOTICE.md`).
-
-### How work lands: the stage ladder
-
-The default `stage` integration mode is the flagship behavior. Approved branches are applied in verdict order via a temp-commit ladder; the full project verification runs after each application; a red verify parks that branch and rolls back only its own temp commit; and a final `git reset --soft` collapses everything that passed into one staged, uncommitted diff. (`--skip-reverify-single` skips the redundant post-application verify when exactly one approved branch is staged; multi-branch ladders always re-verify every rung.) **No fleet commits remain in your history** — you inspect the diff and commit when you're ready, just like native in-editor work. (`commit` mode leaves per-branch merge commits; `manual` mode integrates nothing and hands you the branches.)
-
-### Observability
-
-Each Codex worker gets a transcript — prompt, command timeline with exit statuses, patched files, final message, and token/duration usage — and the run report links to each one. Workers are non-ephemeral, so sessions also appear in the Codex app, and you can interrogate one afterward:
-
-```sh
-codex exec resume --disable plugins -c mcp_servers.node_repl.enabled=false -m <model> -c model_reasoning_effort="<effort>" <sessionId>
-```
-
-Every fleet commit also carries `Fleet-Task:` and `Codex-Session:` trailers, so the fleet log and your git history form a traceable audit trail in both directions.
-
-### Windows: workers that can talk but cannot run commands
-
-Bundled plugins and `[mcp_servers.node_repl]` can start `node_repl.exe`; Windows sandbox setup checks its ACL before **every command** and cannot open the running executable for writing. Such workers may still answer or generate images while commands and file writes fail with `setup refresh had errors`. Workers default to `isolation: "plugins-off"` (`--disable plugins -c mcp_servers.node_repl.enabled=false`), preserving other user config; `"ignore-user-config"` drops user config and requires an explicit model on exec (app-server falls back to plugins-off with a result note); `"none"` retains plugins and MCP settings. Isolation prevents the worker from starting these helpers, but the Codex desktop app can still hold the executable open: close the app, or explicitly choose `windowsSandbox: "unelevated"`, **a weaker sandbox** (`elevated` is also supported; unset preserves the user's setting). Setup tries plugins-off, then plugins-off + unelevated on Windows, then config-free exec if needed; it records unelevated only with `/fleet:setup --allow-unelevated`. Results identify `failureReason: "sandbox_setup_failed"`, give these remedies, and skip automatic continuation/correction retries. Windows sandboxed workers also run as a different user, so git may fail with `dubious ownership`: the driver runs git, not Codex.
-
-### MCP surface
-
-The plugin ships a zero-dependency Node ≥ 18 MCP server that loads automatically, including in cloud sandboxes. Its six tools list fleet runs (`fleet_runs`), summarize one run (`fleet_run`), read a task transcript (`fleet_transcript`), show delegate state and recent event beats (`delegate_status`), queue steering (`delegate_steer`), and request interruption (`delegate_interrupt`). The server touches only the local plugin data directory and needs no credentials.
-
-## The merge guard
-
-The merge guard is an **advisory seatbelt, not a security boundary.** It gates Claude's own shell-tool calls only; it never touches commands you run in your own terminal. It matches `git merge` and `git merge --squash` of `codex/*` branches and checks verdicts keyed to the branch tip SHA. A recorded branch whose tip no longer matches its reviewed SHA is blocked as unreviewed — the branch changed after review. Fail-open is limited to unknown repositories, unknown branches, missing or corrupt state, and guard errors (a guard bug must never brick an unrelated merge). Rebase, cherry-pick, and pull are not matched. The dispatch pipeline's verdict-and-verification protocol is the real enforcement; the guard is a backstop.
-
-## Cloud sandboxes
-
-Cloud sessions cannot run `/plugin`. To expose Fleet to claude.ai/code sessions, check this exact block into `.claude/settings.json` in any repository that should have access:
+Cloud sessions cannot run `/plugin`. Check this into `.claude/settings.json` in a repo that should load Fleet:
 
 ```json
 {
-  "enabledPlugins": { "fleet@wenbinio": true },
+  "enabledPlugins": { "fleet@agent-toolkit": true },
   "extraKnownMarketplaces": {
-    "wenbinio": {
-      "source": { "source": "github", "repo": "wenbinio/claudeorchestratortocodex" }
+    "agent-toolkit": {
+      "source": { "source": "github", "repo": "wenbinio/fleet" }
     }
   }
 }
 ```
 
-Add `OPENAI_API_KEY` as an environment secret. Skills and agents load in cloud sandboxes, and hooks (including the merge guard) fire in cloud sessions with `CLAUDE_CODE_REMOTE=true` set — though cloud guard behavior is on the untested-at-release list below. Without a key, the plugin uses the Claude-only fallback. Cloud data-directory persistence may require rerunning `setup` per session.
+Add `OPENAI_API_KEY` as an environment secret when Codex should run in that sandbox. Without it, dispatch falls back to Claude subagents under the same verify and review rules. Cloud data may not persist; rerun setup if the data directory is empty. Cloud hook behavior has not been confirmed on a real claude.ai session. See [docs/cloud-validation.md](docs/cloud-validation.md).
 
-## Costs
+## Usage
 
-Codex worker usage bills to your OpenAI plan. Fleet runs also consume Claude tokens for planning, the driver and reviewer agents, verification, and integration.
+Day to day, any MCP client calls the tools. Claude Code can also use the skills.
 
-## Limitations & release status
+| Tool | What it does |
+| --- | --- |
+| `fleet_ask` | Start one backend job and return a wait command |
+| `fleet_runs` / `fleet_run` | List jobs, or read one result |
+| `fleet_status` / `fleet_transcript` | Live beats, or the stored transcript |
+| `fleet_steer` / `fleet_interrupt` | Delegate steering, or interrupt a job |
+| `fleet_accounts` | Models and sign-in, without logging in |
+| `fleet_review` | Send one diff to several reviewers; return agreed findings |
+| `fleet_shot` | Responsive PNGs in a fresh headless Chrome |
+| `fleet_deploy_wait` | Poll a deployed URL for a marker; optionally read GitHub checks |
 
-Honest about what has and hasn't been exercised by a real run:
+Read-only tools are `fleet_runs`, `fleet_run`, `fleet_transcript`, `fleet_status`, and `fleet_accounts`. The others start or change work.
 
-- **Untested at release:** the POSIX driver path, the second-Windows-machine path, and the cloud sandbox surface (including cloud merge-guard behavior). Those first runs *are* the validation for those environments.
-- The merge guard is advisory and covers only `git merge`/`git merge --squash` of `codex/*` through Claude's tools — rebase, cherry-pick, pull, and your own terminal are outside its scope by design.
-- Codex's sandbox cannot reliably run local toolchains, so **task specs must never ask Codex to run tests** — the driver verifies outside it. This is baked into the spec-writing rules.
-- The `exec` transport feeds the prompt via stdin/temp file (v0.4.1), so the Windows ~32 KB command-line cap no longer applies; the app-server transport sends prompts over JSON-RPC and is preferred when available.
-- Single-provider (Codex / `gpt-5.6-sol`). No Gemini/other-CLI support today.
+The same commands exist on the CLI:
+
+```bash
+node runner/fleet.mjs ask --backend codex --prompt "…" --cwd /absolute/repo
+node runner/fleet.mjs review --repo /absolute/repo --range HEAD~1..HEAD
+node runner/fleet.mjs shot --url https://example.com --widths 390,1440
+node runner/fleet.mjs deploy-wait --url https://example.com --path /assets/app.js --marker COMMIT
+node runner/fleet.mjs wait RUNID
+node runner/fleet.mjs runs
+node runner/fleet.mjs accounts
+```
+
+Direct runners, when you are not going through a job:
+
+```bash
+node core/lib/runners.mjs codex-run <id> <prompt-file> --cwd DIR
+node core/lib/runners.mjs agy-run <prompt-file>
+node core/lib/runners.mjs grok-run <prompt-file> --json
+node core/lib/runners.mjs api-run <prompt-file> --model openrouter/free
+node core/lib/runners.mjs image-api-run PROMPT --model ID --max-cost USD
+node core/lib/webchat/chatgpt.mjs ask <prompt-file>
+node backends/advisor/advisor.mjs ask <prompt-file>
+```
+
+Recipes for each backend's traps are in [docs/recipes/](docs/recipes/).
+
+### Claude Code skills
+
+`ask` (one job), `fan` (one read-only prompt, several models), `dispatch` (verified Codex worktrees, review, staged integrate), `delegate` (live Codex in your tree, steerable), `setup` (the installer, once per machine). A single verified task is a dispatch batch of one (`runId` starting with `solo-`). There is no separate `solo` skill.
+
+Dispatch still means: Claude writes a grounded spec, a Codex worker edits an isolated worktree, the driver runs verify outside Codex's sandbox, a reviewer re-runs verify, and only an `approve` for that exact tip is integrated. Default integration is `stage`: a temp-commit ladder, re-verify each rung, then `git reset --soft` so your tree gets one staged diff and no fleet commits. `commit` leaves merge commits. `manual` leaves the branches.
+
+The standalone batch runner does the worker half only (worktrees, Codex turns, verify, one correction, commit, transcripts). Review and integrate stay with the dispatch skill:
+
+```bash
+node runner/fleet-runner.mjs --batch batch.json
+node runner/fleet-runner.mjs --resume batch.json
+node runner/fleet-runner.mjs --probe
+node runner/fleet-runner.mjs --smoke
+node runner/fleet-runner.mjs --cleanup batch.json
+```
+
+Worker isolation defaults to `plugins-off` (`--disable plugins` and `mcp_servers.node_repl.enabled=false`, and fleet's own MCP server disabled for that invocation). `ignore-user-config` drops user config and needs an explicit model. `none` keeps plugins. On Windows, `windowsSandbox` may be `elevated` or `unelevated`; unset leaves the user's setting. `unelevated` is a weaker sandbox and is recorded only when setup is passed `--allow-unelevated`.
+
+## Configuration
+
+| Location | Role |
+| --- | --- |
+| `FLEET_HOME` or `AGENT_TOOLKIT_HOME` | Toolkit home. Default `~/.agent-toolkit` |
+| `$FLEET_HOME/config.json` | Providers, tool paths, advisor home, sound venvs |
+| `$FLEET_HOME/fleet/` | Shared runs, `profile.json`, `hosts.json`, `approved.json` |
+| `$FLEET_HOME/secrets/openrouter.dpapi` | Windows DPAPI blob for the OpenRouter key |
+| `$FLEET_HOME/fleet/profile.json` | Per-machine backend overrides for the active profile |
+| `profiles/lok.json`, `profiles/minimal.json` | Shipped profiles |
+
+`lok` turns every backend on, targets Claude, Codex, Grok, and agy, and sets `autoApprove` to `read-only`. `minimal` is Codex and API, host Claude, `autoApprove` `none`. Overrides in the machine `profile.json` win over the shipped file for that same profile name.
+
+Local model root, first match wins: `FLEET_LOCAL_ROOT`, then config `local.root`, then legacy `local.folder`, then `D:/AI/Qwen3.8-Abliterated` on Windows only. Other platforms have no default. The server fleet expects is `http://127.0.0.1:8088/v1`. Ollama is used only when a provider is explicitly configured with engine `ollama` or port 11434. Fleet does not import or download the GGUF.
+
+`FLEET_WORKER=1` is set on every child. Those processes keep the read-only tools and cannot start, steer, or interrupt jobs. Ask, review, shot, and deploy-wait refuse them on the CLI as well.
+
+Removing a host deletes Fleet's registration and the read-only approval rules it added. History stays unless `--purge` is explicit. `--purge` deletes only `$FLEET_HOME/fleet` and refuses any other path. Legacy `~/.claude/plugins/data/fleet-agent-toolkit` is copied into the shared folder on first use and left in place.
+
+The first time the installer changes a Codex or agy settings file, it writes `<file>.fleet-backup` with the original bytes.
+
+## Security model
+
+Fleet treats model output as untrusted supply, and it is not itself a sandbox around the user.
+
+**Merge guard.** `hooks/hooks.json` runs `scripts/merge-guard.sh` before Claude's Bash tool and `scripts/merge-guard.ps1` before the PowerShell tool. It blocks `git merge` and `git merge --squash` of `codex/*` when the repo has verdicts and the branch tip is missing, not `approve`, ineligible, or no longer the reviewed SHA. Fleet only records verdicts for `codex/[A-Za-z0-9._/-]+`. This is an advisory seatbelt for Claude's own tools. It does not see your terminal. Rebase, cherry-pick, pull, and merging a raw SHA are not matched. Unknown repositories, missing tools, corrupt `approved.json`, and internal guard errors fail open so a bug cannot block an unrelated merge. The verdict file written by dispatch is the real gate.
+
+**Approvals.** The installer never grants ask, steer, interrupt, review, shot, or deploy-wait. For `autoApprove: "read-only"` it writes Codex `approval_mode = "approve"` and agy `mcp(fleet/<tool>)` only for the five read-only tools. `none`, or removing a host, deletes those rules. Other permissions in the file are left alone. Claude stays interactive. Grok has no per-tool approval setting fleet can write.
+
+**Secrets.** The OpenRouter key is a DPAPI file or `OPENROUTER_API_KEY`. Decrypt uses a fixed PowerShell script; the path is an environment variable, not part of the script text. The key is sent as a Bearer header. Provider responses are scrubbed for the key and its JSON/URI encodings. Do not put the key in a prompt, a commit, or a log.
+
+**Network.** The MCP server is stdio. The screenshot helper listens on `127.0.0.1` only, for the duration of a shot, and rejects path traversal. Chrome is attached with `--remote-debugging-pipe` and a throwaway profile, not a TCP debugging port. Local inference must be a loopback HTTP URL; the default is `127.0.0.1:8088`. Fleet does not bind a public port.
+
+**Workers.** Children get `FLEET_WORKER=1` and the parent environment. Backends that need a key (API, Codex, `gh`) keep it. A worker that can read its environment can read those variables. Codex workers default to plugins off and fleet MCP disabled for that invocation.
+
+`fleet_review` with `private: true`, or a path matching profile `privatePaths`, does not send the diff to a free API reviewer. It uses local Qwen when that backend is ready, or drops the reviewer with a notice.
+
+## Limitations
+
+- The merge guard is not a security boundary. See above.
+- Codex's sandbox cannot reliably run the project's toolchain. Task specs must not ask the worker to run tests. The driver verifies outside the sandbox.
+- Verify commands are shell strings (`sh -c` or `powershell -Command`). They are the driver's on purpose, and a hostile spec is code execution as the user.
+- `fleet_shot` and `fleet_review` can read local files and reach the network from the host. They are not auto-approved. A prompt-injected orchestrator can still call them if the host allows it.
+- Single-machine facts (absolute tool paths, the Qwen folder, browser profiles) stay in the data directory, never in git.
+- Cloud sandbox loading, the POSIX driver path on a second machine, and cloud merge-guard behavior have not been signed off by a recorded live run. [docs/cloud-validation.md](docs/cloud-validation.md) is the checklist.
+- Sound installs are manual, multi-gigabyte, and pinned. The installer only prints them.
+- GitHub Actions in this repo runs `node --test` on Ubuntu and Windows. It does not deploy.
 
 ## Development
 
-The runner has a hermetic test suite that needs no real Codex — `test/mock-app-server.mjs` replays a captured app-server wire transcript, and the guard matrix is scripted:
-
-```sh
+```bash
 npm test
 ```
 
-CI runs the suite on Ubuntu and Windows (`.github/workflows/ci.yml`).
+That is `node --test`. The suite fakes Codex, Chrome, and the network. CI is [`.github/workflows/ci.yml`](.github/workflows/ci.yml) (Node 24, Ubuntu and Windows). No npm dependencies are installed.
 
-## Standalone runner
-
-The runner works outside a Claude session. It performs only the *dispatch* phase (worktrees, Codex turns, verify, one correction, checked commit, transcripts) — review and integration remain the dispatch skill's job:
-
-```sh
-node runner/fleet-runner.mjs --batch batch.json
-```
-
-The batch is `{repo, codexExe, backend, tasks:[{id, spec, verify?}], model?, effort?, isolation?, windowsSandbox?, timeoutMinutes?}`; results are written to the run's external output directory. `isolation` accepts `plugins-off` (default), `ignore-user-config`, or `none`; `windowsSandbox` accepts `elevated` or `unelevated` and applies on both transports in every isolation mode as `-c windows.sandbox="<value>"`. Unknown values are errors. Config and batch fields use the same names; delegate task JSON accepts both too. `ignore-user-config` always requires a non-empty `model` and never implicitly sets the Windows sandbox.
+Do not commit sign-ins, API keys, browser profiles, or run output.
 
 ## Attribution
 
-The app-server transport and sessionful-worker layer under `vendor/dynamic-workflows-codex/` are **vendored verbatim** from [scasella/claude-dynamic-workflows-codex](https://github.com/scasella/claude-dynamic-workflows-codex) (MIT, © Stephen Casella). Their license and provenance are preserved in [`vendor/dynamic-workflows-codex/LICENSE`](vendor/dynamic-workflows-codex/LICENSE) and [`vendor/dynamic-workflows-codex/NOTICE.md`](vendor/dynamic-workflows-codex/NOTICE.md). Fleet claims no authorship of those files.
+`vendor/dynamic-workflows-codex/` is vendored from [scasella/claude-dynamic-workflows-codex](https://github.com/scasella/claude-dynamic-workflows-codex) (MIT, © Stephen Casella). See [`vendor/dynamic-workflows-codex/NOTICE.md`](vendor/dynamic-workflows-codex/NOTICE.md). Fleet does not claim those files.
 
 ## License
 
-Released under the [MIT License](LICENSE). Copyright 2026 wenbinio.
-Vendored code under `vendor/` retains its own upstream MIT license and copyright (see `vendor/dynamic-workflows-codex/`).
-
-## Runner CLI modes
-
-The standalone runner (`node runner/fleet-runner.mjs`) has five modes:
-
-- `--batch <batch.json>` — run a fleet batch. Prints one `[fleet] <task> <state>` progress line per task transition on stderr, and rewrites `results.json` atomically after each task completes (`complete: false` until the run ends), so an interrupted run always leaves salvageable state. Ctrl-C interrupts active workers cleanly and records unfinished tasks as `interrupted`.
-- `--resume <batch.json>` — re-run a batch, skipping tasks already `done` whose branch tip still matches the recorded commit; stale worktrees/branches of non-done tasks are cleaned before re-dispatch.
-- `--probe` — verify app-server end-to-end (initialize, model list, ephemeral read-only turn with a successful shell command); used by `setup`. Pass `--codex-exe`, `--model`, `--effort`, `--isolation`, and optional `--windows-sandbox` from the passing smoke.
-- `--smoke` — run the exec shell smoke and select working isolation settings. Pass `--codex-exe`, `--model`, and `--effort`; `--allow-unelevated` explicitly permits selecting the weaker Windows sandbox. JSON output reports attempts and the settings to save to config; a chat-only worker fails.
-- `--cleanup <batch.json>` — remove the batch's worktrees (`--delete-branches` additionally deletes unmerged `codex/*` branches). Prints a JSON summary.
+[MIT](LICENSE). Copyright 2026 wenbinio. Vendored files keep their upstream MIT license.
 
 ## Changelog
 
-- **0.6.2** — Isolate Codex worker plugins/MCP helpers by default, support explicit Windows sandbox overrides, classify sandbox setup failures with remedies, and require a shell-execution setup smoke with opt-in for the weaker unelevated sandbox.
+Rebuilt from git history. There are no release tags. Versions below are the ones named in commit subjects. The 0.6.2 line is the imported Claude→Codex plugin; everything after it is this multi-backend server.
+
+- **0.15.1** — CI on Ubuntu and Windows, Node 24 baseline, MCP `initialize` negotiates a supported protocol version and answers `ping`, sound installs pinned to lockfiles and fixed upstream revisions.
+- **0.15.0** — Server and README version bump, then OpenRouter image generation: price the endpoint first, require an exact model id and `maxCostUsd`, write image files, record actual cost. Codex remains the default image provider.
+- **0.14.1** — `fleet_review` across models with agreement on changed lines; private reviews prefer local Qwen. Local backend drives llama.cpp on 127.0.0.1:8088 and does not stop it. `fleet_shot` and `fleet_deploy_wait` use headless Chrome over a DevTools pipe.
+- **0.13.0** — agy as a host. Profile `lok` auto-approves read-only fleet tools in Codex and agy. Tools that start or change work still ask.
+- **0.12.0** — `effort` for OpenRouter (`reasoning.effort`) and advisor (Argon thinking level), from one rules table. ChatGPT web refuses effort.
+- **0.11.0** — Standalone tree: runners, OpenRouter client, browser engine, advisor, and sound scripts live in this repo. One data home at `~/.agent-toolkit/fleet`. `install.mjs` plans and applies per host and profile. Workers carry `FLEET_WORKER=1` and cannot start jobs.
+- **0.10.1** — ChatGPT web selectors taken from a signed-in page probe. Each job uses a Temporary chat unless `keepChat` is set.
+- **0.10.0** — ChatGPT web backend on the shared browser engine. Paced (one at a time, 20s apart, 30 an hour). Strongest model only; a limit is reported, not a silent downgrade.
+- **0.9.1** — Smoke-test fixes: harness-only free models are failures the picker skips, wait shows the error, image runs keep Codex's final message, Grok's model menu parses model lines only.
+- **0.9.0** — Image, advisor (Argon, only when `lokAsked`), and local sound. `fleet_accounts` returns the whole menu with cost and access tags. `openrouter/auto` is refused.
+- **0.8.0** — One adapter table. Grok read-only. OpenRouter text jobs: free by default, paid only by exact id plus `maxCostUsd`.
+- **0.7.0** (landed as `fleet@agent-toolkit`, no patch tag) — `fleet_ask` starts Codex, agy, or DeepSeek and returns immediately. Shared history across asks, batches, and delegates. Skills: ask, fan, dispatch, delegate, setup. `solo` folded into dispatch.
+- **0.6.2** — Imported from codex-fleet. Codex workers isolate plugins and MCP helpers by default, optional Windows sandbox override, sandbox-setup failures classified, setup requires a real shell command.
