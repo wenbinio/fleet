@@ -1,6 +1,6 @@
 [
   {
-    "id": "agy:gemini-3.8-flash-high",
+    "id": "agy:gemini-4-hydrogen",
     "status": "done",
     "runId": "ask-agy-20261020-191029-0923",
     "answer": "{\"findings\":[{\"claim\":\"Off-by-one error in loop condition causes out-of-bounds array access and runtime TypeError.\",\"failure\":\"Calling total([{ price: 10, qty: 1 }]) iterates up to i = 1 where items[1] is undefined, throwing TypeError: Cannot read properties of undefined (reading 'price'). Similarly, calling total([]) evaluates items[0].price and throws TypeError.\",\"file\":\"cart.js\",\"line\":4,\"severity\":\"major\"},{\"claim\":\"Discount calculation divides percent by 10 instead of 100, multiplying the discount by 10.\",\"failure\":\"Calling applyDiscount(100, 20) calculates 100 * (1 - 20 / 10) = -100 instead of 80, returning an incorrect negative amount.\",\"file\":\"cart.js\",\"line\":9,\"severity\":\"major\"}]}\n",

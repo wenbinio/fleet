@@ -22,7 +22,7 @@
   },
   "review": {
     "reviewers": [
-      "agy:gemini-3.8-flash-high",
+      "agy:gemini-4-hydrogen",
       "grok",
       "api:free"
     ]

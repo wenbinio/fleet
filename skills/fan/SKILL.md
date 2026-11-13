@@ -7,7 +7,7 @@ Fleet root: use `${CLAUDE_PLUGIN_ROOT}` in Claude Code; elsewhere use the fleet 
 
 # One prompt, several answers
 
-Arguments: the targets, written `backend[:model]`, for example `agy:gemini-3.8-flash-low grok codex:sol
+Arguments: the targets, written `backend[:model]`, for example `agy:gemini-4-hydrogen grok codex:sol
 api:free api:free api:free`. With no targets, use three free api models from different vendors:
 `node "${FLEET_ROOT}/runner/fleet.mjs" models --free --n 3`.
 

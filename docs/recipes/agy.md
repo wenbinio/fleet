@@ -12,15 +12,20 @@ generation.
 ## Headless recipe
 
 ```bash
-agy -p "<prompt>" --mode plan --model gemini-3.8-flash-high --add-dir <dir> \
+agy -p "<prompt>" --mode plan --model gemini-4-hydrogen --add-dir <dir> \
     --output-format json --print-timeout 600s
 ```
 
 Or use `bin/agy-run`, which does the checks below for you, and `bin/agy-fan` to run several at once.
 
 - `--mode plan` is read-only. Asked to write a file, it only drafts a plan.
-- `agy models` lists the model ids. As of 2026-10-18: `gemini-3.8-flash-high|medium|low`, `claude-sonnet-4-6`,
-  `claude-opus-4-6-thinking`, `gpt-oss-120b-medium`.
+- `agy models` lists the model ids your plan can use. From Google's docs on 2026-11-13 (not yet run on this
+  machine): `gemini-4-hydrogen` (every plan; fleet's default), `gemini-4-argon` (paid Pro and Ultra),
+  `gemini-4-carbon` (Ultra), `gemini-3.8-flash`, `claude-sonnet-5-5`, `claude-opus-5-5`. `claude-sonnet-4-6`,
+  `claude-opus-4-6-thinking` and `gpt-oss-120b-medium` go away on 2026-11-18.
+- Thinking level: append it to the id (`gemini-4-hydrogen-xhigh`) or pass `--effort low|medium|high|xhigh`
+  (agy 1.2.11 or later). Hydrogen defaults to high. fleet passes the model id through as written, so use the
+  suffix form: `fleet:ask agy` with model `gemini-4-argon` or `gemini-4-hydrogen-xhigh`.
 - `--output-format json` returns `{conversation_id, status, response, usage, …}`; add `--json-schema '<schema>'`
   and the answer also comes back as `structured_output`.
 - It reads images (`.webp`, `.png`) from an added folder, and it loads a repo's `AGENTS.md` as rules.

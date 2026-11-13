@@ -82,7 +82,7 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
         return ids.length ? ids : [fallback];
       } catch { return [fallback]; }
     };
-    const [agy, grok] = await Promise.all([cliModels("agy", "gemini-3.8-flash-low"), cliModels("grok", "grok-4.7")]);
+    const [agy, grok] = await Promise.all([cliModels("agy", "gemini-4-hydrogen"), cliModels("grok", "grok-4.7")]);
     menu = [
       { backend: "codex", models: aliases.map(([id, modelId]) => ({ id, modelId, cost: "subscription", access: "edits" })), notes: [] },
       { backend: "agy", models: models(agy, "subscription", "read-only"), notes: [] },

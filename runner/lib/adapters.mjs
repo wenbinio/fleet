@@ -3,7 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadToolkit } from "./runtime.mjs";
 import { supportsEffort } from "../../core/lib/effort.mjs";
-import { loadConfig } from "../../core/lib/toolkit.mjs";
+import { loadConfig, userHome } from "../../core/lib/toolkit.mjs";
 import { localProvider } from "../../core/lib/local.mjs";
 import { IMAGE_OPTIONS, validateImageOptions } from "../../core/lib/image-api.mjs";
 
@@ -63,6 +63,31 @@ function imageAnswer(log) {
   }
   return answer ?? log.slice(-3000);
 }
+function threadId(log) {
+  for (const line of log.split(/\r?\n/)) {
+    let event; try { event = JSON.parse(line); } catch { continue; /* Mixed logs may contain plain text or incomplete JSON lines. */ }
+    if (event?.type === "thread.started") return typeof event.thread_id === "string" && /^[\w-]+$/.test(event.thread_id) ? event.thread_id : undefined;
+  }
+}
+// Codex's built-in image_gen saves to $CODEX_HOME/generated_images/<thread>/ and the model
+// may skip copying it into the workspace; pull that run's images into <run>/generated/.
+function importGenerated(directory, env, produced) {
+  const id = threadId(readText(path.join(directory, "log.txt")));
+  if (!id) return;
+  const source = path.join(env.CODEX_HOME || path.join(userHome(env), ".codex"), "generated_images", id);
+  try { if (!fs.lstatSync(source).isDirectory()) return; } catch (error) { if (error.code === "ENOENT") return; throw error; }
+  const seen = [...produced];
+  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+    // Only plain files: links never lead out of the thread folder.
+    if (!entry.isFile() || !imageFile(entry.name)) continue;
+    const from = path.join(source, entry.name), bytes = fs.readFileSync(from), destination = path.join(directory, "generated", entry.name);
+    // An existing destination (e.g. from the before snapshot) is never overwritten.
+    if (fs.existsSync(destination) || seen.some(file => file.bytes === bytes.length && fs.readFileSync(file.path).equals(bytes))) continue;
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.writeFileSync(destination, bytes, { flag: "wx" });
+    seen.push({ path: destination, bytes: bytes.length });
+  }
+}
 const artifactTranscript = (run, context) => ({ ...textTranscript(run, context), details: { files: run.files ?? [] } });
 function sessionResume(opts, resumed, existing, backend, field) {
   if (!opts.resume) return;
@@ -109,7 +134,7 @@ export const ADAPTERS = {
     },
   },
   agy: {
-    defaults: { model: "gemini-3.8-flash-low" },
+    defaults: { model: "gemini-4-hydrogen" },
     allowed: ["cwd", "model", "addDirs", "jsonSchema", "noPreamble"], maxLive: 4, deniedCodes: [3],
     outputFile: "answer.txt",
     command: (run, { directory, repo }) => runner(repo, "agy", [prompt(directory), "--model", run.model, ...(run.cwd ? ["--add-dir", run.cwd] : []), ...dirs(run), ...(run.jsonSchema ? ["--json-schema", run.jsonSchema] : []), ...(run.noPreamble ? ["--no-preamble"] : [])]),
@@ -186,7 +211,7 @@ export const ADAPTERS = {
         ...IMAGE_OPTIONS.filter(key => run[key] !== undefined).flatMap(key => [`--${key.replaceAll('_', '-')}`, String(run[key])]), ...(run.images ?? []).flatMap(file => ['--image', file]), ...(run.outDir ? ['--out-dir', run.outDir] : [])]);
       return { exe: process.execPath, args: [path.join(repo, "lib", "runners.mjs"), "codex-image", directory, ...(run.images ?? []), "--model", run.model, "--effort", run.effort] };
     },
-    parse({ directory, run, state, exitCode, interrupted, stdout }) {
+    parse({ directory, run, state, env, exitCode, interrupted, stdout }) {
       if (run.provider === 'openrouter') {
         if (!stdout.trim()) return { answer: '', status: 'failed', error: 'image runner returned no result' };
         const data = jsonResult(stdout);
@@ -194,7 +219,9 @@ export const ADAPTERS = {
         const metadata = Object.fromEntries(['files', 'costUsd', 'estimateUsd', 'estimate', 'overCap', 'model', 'providerSlug', 'n'].filter(key => data[key] !== undefined).map(key => [key, data[key]]));
         return { answer: JSON.stringify({ files: data.files ?? [] }), metadata, status: data.outcome === 'done' && exitCode !== 0 ? 'failed' : data.outcome, error: data.error };
       }
-      const produced = artifactFiles(directory, imageFile).filter(file => !state.beforeFiles.has(file.path));
+      const fresh = () => artifactFiles(directory, imageFile).filter(file => !state.beforeFiles.has(file.path));
+      importGenerated(directory, env, fresh());
+      const produced = fresh();
       const files = !exitCode && !interrupted ? copyArtifacts(produced, directory, run.outDir) : produced;
       return { answer: imageAnswer(readText(path.join(directory, "log.txt"))), metadata: { files }, status: !exitCode && produced.length ? "done" : "failed", ...(!produced.length ? { error: "no images produced" } : {}) };
     },

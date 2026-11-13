@@ -1,6 +1,6 @@
 # Fleet
 
-Version **0.15.1**
+Version **0.15.2**
 
 ## New device, in three steps
 

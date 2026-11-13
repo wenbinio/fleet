@@ -19,8 +19,9 @@ file outside the target repo and pass `promptFile`. Never ask a worker to run te
 - **codex** edits `cwd` (workspace-write) unless `readOnly`. Defaults: model `astra`, effort `high`. Use `sol` for
   research or audits, `luna` for cheap checks against given ground truth, and `xhigh` effort rarely.
   To continue the same Codex session, pass `resume: <earlier runId>`.
-- **agy is read-only. Never ask it for code.** Plan mode only. Default model `gemini-3.8-flash-low`. The runner
-  adds the no-shell line ("use only your file-reading tool… never run shell commands"); keep it, because Flash
+- **agy is read-only. Never ask it for code.** Plan mode only. Default model `gemini-4-hydrogen`
+  (Hydrogen, fast, on every plan); pass `gemini-4-argon` for a harder question. The runner
+  adds the no-shell line ("use only your file-reading tool… never run shell commands"); keep it, because Gemini
   reaches for the shell and gets denied. Point it at folders with `addDirs`/`cwd`. Use `jsonSchema` for
   structured output. At most 4 agy jobs at once.
 - **grok is read-only too.** Its sandbox doesn't work on Windows, so the runner removes its shell and write tools.

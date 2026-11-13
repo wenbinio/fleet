@@ -62,6 +62,6 @@ The default `agyPlanPreamble` is exactly:
 Use only your file-reading tool to open files. Never run shell or terminal commands.
 ```
 
-It is prepended with a blank line. Set it to an empty string in config.json to disable it. The READY check defaults to gemini-3.8-flash-low (override with --model) and ignores case and trailing punctuation. Gemini's READY comparison stays exact after trimming.
+It is prepended with a blank line. Set it to an empty string in config.json to disable it. The READY check defaults to gemini-4-hydrogen (override with --model) and ignores case and trailing punctuation. Gemini's READY comparison stays exact after trimming.
 
 agy remains one machine-wide login and health record; Fleet never rewrites HOME/USERPROFILE or switches credentials. `agyConcurrency` is a positive integer, default 4, preserved by setup. Within one fan, up to that many distinct targets can share agy and use different models, subject to --concurrency. Claims survive completion for the entire fan; excess targets explicitly fail with no_healthy_account. This does not impose a global semaphore across independent fan invocations. Gemini keeps one target per account. Quota cools the shared agy record; already-running targets finish and cannot clear that cooldown with a late success. Each target excludes every account it has already tried from later failover.

@@ -8,7 +8,7 @@ fleet_review {repo, range: "HEAD~1..HEAD"}          # or diffFile, or branch (+ 
 fleet_review {…, spec: "what the change must do", private: true, minAgree: 2, reviewers: ["agy", "local"]}
 ```
 
-- Default reviewers: `agy:gemini-3.8-flash-high`, `grok`, `api:free` (profile `review.reviewers`).
+- Default reviewers: `agy:gemini-4-hydrogen`, `grok`, `api:free` (profile `review.reviewers`).
 - **Private** (`private: true`, or the repo/diff paths match a `privatePaths` glob in the profile): the free
   OpenRouter reviewer is replaced by `local` (Lok's Qwen on this machine), or dropped when local isn't ready.
 - Output: `reviewers` with each status, and `agreed` findings `{file, line, severity, claim, failure, by}`.

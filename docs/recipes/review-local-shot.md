@@ -22,7 +22,7 @@ Optional `spec` is inline text. Reviewers receive the diff in their prompt. Code
 scratch directory rather than the repository, and Codex uses its read-only sandbox. Reviewers are instructed to
 report concrete failures in JSON. A failed or malformed reviewer remains visible alongside successful reviewers.
 
-Profile `review.reviewers` defaults to `agy:gemini-3.8-flash-high`, `grok`, `api:free`; disabled backends are dropped.
+Profile `review.reviewers` defaults to `agy:gemini-4-hydrogen`, `grok`, `api:free`; disabled backends are dropped.
 `minAgree` defaults to two distinct reviewer IDs. Each group holds at most one finding per reviewer. Findings are
 anchored to changed lines in their own file before grouping. Every changed line is scored by identifier, number and
 operator overlap with the claim plus failure. Ties prefer the reported line, then the nearest line, then the lowest

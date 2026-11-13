@@ -1,6 +1,6 @@
 [
   {
-    "id": "agy:gemini-3.8-flash-high",
+    "id": "agy:gemini-4-hydrogen",
     "status": "done",
     "runId": "ask-agy-20261020-190629-f16d",
     "answer": "{\"findings\":[{\"claim\":\"Off-by-one loop condition causes an out-of-bounds access on items, throwing a TypeError.\",\"failure\":\"Calling total([{price: 10, qty: 1}]) iterates through i = 1 where items[1] is undefined, throwing a TypeError when attempting to read property 'price' of undefined.\",\"file\":\"cart.js\",\"line\":4,\"severity\":\"major\"},{\"claim\":\"The discount calculation divides percent by 10 instead of 100, calculating an incorrect discount amount.\",\"failure\":\"Calling applyDiscount(100, 20) computes 100 * (1 - 20 / 10) = -100 instead of the expected 80.\",\"file\":\"cart.js\",\"line\":9,\"severity\":\"major\"}]}\n",

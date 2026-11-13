@@ -332,7 +332,7 @@ async function handleMessage(message) {
     result(message.id, {
       protocolVersion: SUPPORTED_PROTOCOL_VERSIONS.includes(message.params?.protocolVersion) ? message.params.protocolVersion : SUPPORTED_PROTOCOL_VERSIONS[0],
       capabilities: { tools: {} },
-      serverInfo: { name: "fleet", version: "0.15.1" },
+      serverInfo: { name: "fleet", version: "0.15.2" },
     });
     return;
   }

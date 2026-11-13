@@ -1,6 +1,6 @@
 [
   {
-    "id": "agy:gemini-3.8-flash-high",
+    "id": "agy:gemini-4-hydrogen",
     "status": "failed",
     "runId": "ask-agy-20261020-183554-d1b0",
     "error": "denied: ReadFile\n"
