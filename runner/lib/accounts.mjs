@@ -10,6 +10,7 @@ import { BACKENDS } from "./adapters.mjs";
 import { effortNote } from "../../core/lib/effort.mjs";
 import { localStatus } from "../../core/lib/local.mjs";
 import { imageModels } from "../../core/lib/image-api.mjs";
+import { vibeProbeArgs, vibeProbeDirectory, parseVibeModelIds } from "../../core/lib/runners.mjs";
 
 const TTL = 10 * 60 * 1000;
 const models = (ids, cost, access) => ids.map(id => ({ id, cost, access }));
@@ -62,7 +63,7 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
   const chatModels = () => models(chatState.models.length ? chatState.models : ["strongest"], "subscription", "text");
   const aliases = Object.entries(runners.aliases).filter(([id]) => ["astra", "sol", "luna"].includes(id));
   // Fingerprints invalidate stale installation/provider menus without storing config or credentials.
-  const fingerprint = createHash("sha256").update(JSON.stringify([7, enabled, repo, aliases, services.map(s => [s.name, s.baseUrl]), imageService?.baseUrl, config.soundVenv, config.mossVenv, config.soundDir, config.mossTools])).digest("hex");
+  const fingerprint = createHash("sha256").update(JSON.stringify([8, enabled, repo, aliases, services.map(s => [s.name, s.baseUrl]), imageService?.baseUrl, config.soundVenv, config.mossVenv, config.soundDir, config.mossTools])).digest("hex");
   const cacheFile = path.join(dataDir, "model-menu.json");
   let cache;
   try { cache = JSON.parse(fs.readFileSync(cacheFile, "utf8")); } catch {}
@@ -71,23 +72,26 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
   if (!menu) {
     const discoverModels = discover ?? (async name => {
       const exe = toolkit.resolveTool(name, { env });
-      return exe ? toolkit.capture(exe, ["models"], { env, timeout: 30_000 }) : { code: 1, stdout: "", stderr: "" };
+      if (!exe) return { code: 1, stdout: "", stderr: "" };
+      const cwd = name === "vibe" ? vibeProbeDirectory() : undefined;
+      return toolkit.capture(exe, name === "vibe" ? vibeProbeArgs(cwd) : ["models"], { env, ...(cwd ? { cwd } : {}), timeout: 30_000 });
     });
     const cliModels = async (name, fallback) => {
-      if (!enabled.includes(name)) return [fallback];
+      if (!enabled.includes(name)) return [fallback].flat();
       try {
         const result = await discoverModels(name);
         const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-        const ids = name === "grok" ? parseGrokModelIds(output) : result.code !== 0 ? [] : parseModelIds(output);
-        return ids.length ? ids : [fallback];
-      } catch { return [fallback]; }
+        const ids = name === "vibe" ? parseVibeModelIds(output) : name === "grok" ? parseGrokModelIds(output) : result.code !== 0 ? [] : parseModelIds(output);
+        return ids.length ? ids : [fallback].flat();
+      } catch { return [fallback].flat(); }
     };
-    const [agy, grok] = await Promise.all([cliModels("agy", "gemini-4-hydrogen"), cliModels("grok", "grok-4.7")]);
+    const [agy, grok, vibe] = await Promise.all([cliModels("agy", "gemini-4-hydrogen"), cliModels("grok", "grok-4.7"), cliModels("vibe", ["zai-glm-5-3-flash", "mistral-medium-3.5"])]);
     menu = [
       { backend: "codex", models: aliases.map(([id, modelId]) => ({ id, modelId, cost: "subscription", access: "edits" })), notes: [] },
       { backend: "agy", models: models(agy, "subscription", "read-only"), notes: [] },
       { backend: "grok", models: models(grok, "subscription", "read-only"), notes: [] },
       { backend: "deepseek", models: models(["deepseek-flash", "deepseek-v4-pro"], "subscription", "edits"), notes: [] },
+      { backend: "vibe", models: models(vibe, "subscription", "edits"), notes: ["Mistral Vibe on Lok's Mistral account; no shell; readOnly for audits"] },
       ...await Promise.all(services.map(async service => {
         let free = [], size = null;
         try { free = await api.freeModels(service, { ...apiOptions, env }); size = await api.catalogSize(service, { ...apiOptions, env }); } catch {}
@@ -116,7 +120,7 @@ export async function accounts({ backend, env = process.env, dataDir, apiOptions
     if (row.backend === "local") status = local;
     else if (row.backend === 'image' && row.provider === 'openrouter') {
       status = { ...await api.accountStatus(imageService, { ...apiOptions, env }), spendUsd: history.runs.filter(run => run.provider === row.provider).reduce((sum, run) => sum + (run.costUsd ?? 0), 0) };
-    } else if (["codex", "agy", "grok", "deepseek", "image"].includes(row.backend)) {
+    } else if (["codex", "agy", "grok", "deepseek", "vibe", "image"].includes(row.backend)) {
       status = await signIn(row.backend === "deepseek" ? "dsh" : row.backend === "image" ? "codex" : row.backend);
     } else if (row.backend === "api") {
       const service = services.find(service => service.name === row.provider);

@@ -25,7 +25,7 @@ const TRUNCATION_NOTE = "\n\n[Transcript truncated to 40000 characters.]";
 const str = { type: "string" };
 const runSchema = objectSchema({ runId: str }, ["runId"]);
 export const TOOLS = [
-  { name: "fleet_ask", description: "Start a backend job and return its wait command.", inputSchema: objectSchema({ backend: { enum: BACKENDS }, prompt: str, promptFile: str, cwd: { type: "string", description: "Absolute folder the worker runs in." }, model: str, timeout: { type: "number", exclusiveMinimum: 0, description: "Seconds; local default 1200, chatgpt 1800." }, keepChat: { type: "boolean" }, effort: { type: "string", description: EFFORT_DESCRIPTION }, readOnly: { type: "boolean" }, addDirs: { type: "array", items: str }, jsonSchema: str, noPreamble: { type: "boolean" }, resume: { type: "string", description: "Earlier runId to continue." }, provider: str, n: { type: "integer", minimum: 1, maximum: 10 }, resolution: str, aspect_ratio: str, size: str, quality: str, output_format: { enum: ["png", "jpeg", "webp", "svg"] }, background: { enum: ["auto", "transparent", "opaque"] }, maxTokens: { type: "integer", minimum: 1 }, maxCostUsd: { type: "number", minimum: 0 }, system: { type: "string", description: "System-prompt file path." }, images: { type: "array", items: str, description: "Absolute reference images." }, outDir: str, files: { type: "array", items: str, description: "Absolute paths sent to the advisor." }, lokAsked: { type: "boolean", description: "True only when Lok asked for Argon." }, engine: { enum: ["sao", "moss"] }, seconds: { type: "number", minimum: 0.5, maximum: 47 }, takes: { type: "integer", minimum: 1, maximum: 5 }, seed: { type: "integer" }, music: { type: "boolean" } }, ["backend"]) },
+  { name: "fleet_ask", description: "Start a backend job and return its wait command.", inputSchema: objectSchema({ backend: { enum: BACKENDS }, prompt: str, promptFile: str, cwd: { type: "string", description: "Absolute folder the worker runs in." }, model: str, timeout: { type: "number", exclusiveMinimum: 0, description: "Seconds; local/vibe default 1200, chatgpt 1800." }, keepChat: { type: "boolean" }, effort: { type: "string", description: EFFORT_DESCRIPTION }, readOnly: { type: "boolean" }, addDirs: { type: "array", items: str }, jsonSchema: str, noPreamble: { type: "boolean" }, resume: { type: "string", description: "Earlier runId to continue." }, provider: str, n: { type: "integer", minimum: 1, maximum: 10 }, resolution: str, aspect_ratio: str, size: str, quality: str, output_format: { enum: ["png", "jpeg", "webp", "svg"] }, background: { enum: ["auto", "transparent", "opaque"] }, maxTurns: { type: "integer", minimum: 1, maximum: 200 }, maxTokens: { type: "integer", minimum: 1 }, maxCostUsd: { type: "number", minimum: 0 }, system: { type: "string", description: "System-prompt file path." }, images: { type: "array", items: str, description: "Absolute reference images." }, outDir: str, files: { type: "array", items: str, description: "Absolute paths sent to the advisor." }, lokAsked: { type: "boolean", description: "True only when Lok asked for Argon." }, engine: { enum: ["sao", "moss"] }, seconds: { type: "number", minimum: 0.5, maximum: 47 }, takes: { type: "integer", minimum: 1, maximum: 5 }, seed: { type: "integer" }, music: { type: "boolean" } }, ["backend"]) },
   { name: "fleet_runs", description: "List recent jobs, batches and delegates.", inputSchema: objectSchema({ limit: { type: "integer", minimum: 1, default: 20 }, backend: { enum: BACKENDS } }) },
   { name: "fleet_run", description: "Read one run's results and answer.", inputSchema: runSchema },
   { name: "fleet_transcript", description: "Read a run or batch task transcript.", inputSchema: objectSchema({ runId: str, taskId: str }, ["runId"]) },
@@ -169,6 +169,11 @@ function oneLine(value, limit = 500) {
 
 export function eventBeat(event) {
   if (event?.item) event = { ...event.item, at: event.at };
+  if (event?.sessionId && event.type === "message") {
+    if (event.role === "user") return null;
+    if (event.role === "assistant") return `agent: ${oneLine((event.content ?? []).map(part => part.text ?? "").join(""))}`;
+  }
+  if (event?.sessionId && event.type === "effect") return `tool: ${oneLine(event.title)}`;
   if (event?.type === "agent_message") event = { ...event, type: "agentMessage" };
   if (event?.type === "command_execution") event = { ...event, type: "commandExecution", exitCode: event.exit_code };
   if (event?.type === "file_change") event = { ...event, type: "fileChange" };
@@ -248,7 +253,7 @@ async function eventBeats(file, last) {
   if (!file) return [];
   const text = last ? await readTail(file, 256 * 1024, true) : await fsp.readFile(file, "utf8").catch(error => { if (error.code === "ENOENT") return ""; throw error; });
   const lines = text.split(/\r?\n/).filter(Boolean);
-  return (last ? lines.slice(-last) : lines).map(line => { try { return eventBeat(JSON.parse(line)); } catch { return `invalid event: ${oneLine(line)}`; } });
+  return (last ? lines.slice(-last) : lines).map(line => { try { return eventBeat(JSON.parse(line)); } catch { return `invalid event: ${oneLine(line)}`; } }).filter(beat => beat !== null);
 }
 
 export function toolsFor({ env = process.env } = {}) {
@@ -304,7 +309,8 @@ export async function callTool(name, rawArguments, { env = process.env, dataDir,
     const run = kind === "ask" ? readAsk(directory) : null;
     const source = run ? await transcriptSource(directory, run, { env }) : { format: "events", file: path.join(directory, "events.jsonl") };
     const text = source.format === "text" ? `Prompt:\n${await fsp.readFile(path.join(directory, "prompt.txt"), "utf8")}\n\nAnswer:\n${answerOf(directory)}${source.reasoning ? "\n\nReasoning:\n" + await readTail(path.join(directory, "reasoning.txt"), 80_000) : ""}${source.details ? "\n\n" + JSON.stringify(source.details) : ""}` : (await eventBeats(source.file)).join("\n");
-    return { value: capText(text), json: false };
+    const details = source.format === "events" && run?.backend === "vibe" && source.details ? "\n\n" + JSON.stringify(source.details) : "";
+    return { value: capText(text + details), json: false };
   }
 }
 
@@ -332,7 +338,7 @@ async function handleMessage(message) {
     result(message.id, {
       protocolVersion: SUPPORTED_PROTOCOL_VERSIONS.includes(message.params?.protocolVersion) ? message.params.protocolVersion : SUPPORTED_PROTOCOL_VERSIONS[0],
       capabilities: { tools: {} },
-      serverInfo: { name: "fleet", version: "0.15.2" },
+      serverInfo: { name: "fleet", version: "0.16.1" },
     });
     return;
   }

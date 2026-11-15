@@ -174,6 +174,24 @@ export const ADAPTERS = {
     },
     transcript: (run, context) => ({ ...textTranscript(run, context), details: { stopReason: run.stopReason, usage: run.usage } }),
   },
+  vibe: {
+    defaults: { model: "zai-glm-5-3-flash" },
+    allowed: ["cwd", "model", "readOnly", "resume", "maxTurns", "timeout"], required: ["cwd"], maxLive: 4, json: true,
+    resume: (opts, resumed, existing) => sessionResume(opts, resumed, existing, "vibe", "session"),
+    prepare: (opts, { resumed }) => resumed ? { resumeSession: resumed.session, session: resumed.session, model: resumed.model } : {},
+    validate(opts) {
+      if (opts.maxTurns !== undefined && (!Number.isInteger(opts.maxTurns) || opts.maxTurns < 1 || opts.maxTurns > 200)) throw new Error("maxTurns must be an integer between 1 and 200");
+      if (opts.timeout !== undefined && (!Number.isFinite(opts.timeout) || opts.timeout <= 0)) throw new Error("timeout must be positive seconds");
+    },
+    command: (run, { directory, repo }) => runner(repo, "vibe", [prompt(directory), "--json", "--cwd", run.cwd, "--events", path.join(directory, "events.jsonl"), ...(run.model && !run.resumeSession ? ["--model", run.model] : []), ...(run.readOnly ? ["--read-only"] : []), ...(run.maxTurns !== undefined ? ["--max-turns", String(run.maxTurns)] : []), ...(run.timeout !== undefined ? ["--timeout", String(run.timeout)] : []), ...(run.resumeSession ? ["--resume", run.resumeSession] : [])]),
+    parse({ stdout, exitCode, run }) {
+      if (!stdout.trim()) return { answer: "", status: "failed" };
+      const data = jsonResult(stdout);
+      if (!["done", "empty", "failed", "signed_out", "rate_limited"].includes(data.outcome)) throw new Error("invalid vibe outcome");
+      return { answer: data.answer ?? "", status: ["done", "empty"].includes(data.outcome) && exitCode !== 0 ? "failed" : data.outcome, error: data.error, metadata: { session: data.sessionId, model: data.model ?? run?.model, usage: data.usage, costUsd: data.costUsd, steps: data.steps, denials: data.denials } };
+    },
+    transcript: (run, { directory }) => ({ format: "events", file: path.join(directory, "events.jsonl"), details: { denials: run.denials, usage: run.usage } }),
+  },
   api: {
     defaults: {}, allowed: ["provider", "model", "maxTokens", "maxCostUsd", "system", "responseFormat"], maxLive: 8, json: true,
     async prepare(opts, { repo, env, platform }) {

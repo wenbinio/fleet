@@ -1,0 +1,26 @@
+{
+  "outcome": "turn_limit",
+  "stop_reason": "limit",
+  "error": null,
+  "session_id": "058c15d0-73ca-f5d5-0a2b-284466ff7489",
+  "usage": {
+    "input_tokens": 8432,
+    "output_tokens": 32,
+    "cached_input_tokens": 5760,
+    "total_tokens": 8464
+  },
+  "cost_usd": 0,
+  "steps": 1,
+  "schema_version": 1,
+  "vibe_version": "3.1.2",
+  "journal_dir": "session",
+  "started_at": "2026-11-15T20:34:28.782026Z",
+  "ended_at": "2026-11-15T20:34:34.681816Z",
+  "limits": {
+    "max_turns": 1,
+    "max_price": null,
+    "max_tokens": null,
+    "time_limit_s": null
+  },
+  "exit_code": 3
+}

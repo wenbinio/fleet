@@ -155,6 +155,71 @@ export async function grokRun(argv, { env = process.env, run = capture, stdout =
     stderr(result.err); return result.code;
   } finally { if (temporary) fs.rmSync(temporary, { recursive: true, force: true }); }
 }
+export const vibeProbeArgs = workdir => ['-p', 'x', '--model', '__fleet_list_models__', '--workdir', workdir, '--trust'];
+export function vibeProbeDirectory() {
+  const directory = path.join(os.tmpdir(), 'fleet-vibe-probe');
+  fs.mkdirSync(directory, { recursive: true });
+  return directory;
+}
+export function parseVibeModelIds(text) {
+  const line = String(text).match(/Available:\s*([^\r\n]+)/i)?.[1];
+  return line ? [...new Set(line.split(',').map(id => id.trim()).filter(Boolean))] : [];
+}
+export function vibeArgs({ promptFile, cwd, model, readOnly, maxTurns = 40, timeout = 1200, resume, exportDir }) {
+  return ['--prompt-file', promptFile, '--output', 'streaming', '--workdir', cwd, '--trust', '--output-dir', exportDir,
+    '--max-turns', String(maxTurns), '--time-limit', String(timeout), ...(resume ? ['--resume', resume] : model ? ['--model', model] : []),
+    ...(readOnly ? ['--enabled-tools', 'read_file', '--enabled-tools', 'grep'] : ['--agent', 'accept-edits'])];
+}
+const cleanVibeError = text => String(text ?? '').split(/\r?\n/).filter(line => !line.startsWith('Reading API keys from the system keyring')).join('\n').trim();
+export function classifyVibe({ code, stdout = '', stderr = '', timedOut, exportData = {} }) {
+  let answer = '', sessionId = exportData.session_id;
+  const tools = [], denials = (exportData.warnings ?? []).map(w => w.message).filter(message => typeof message === 'string' && message.startsWith('Tool call denied'));
+  for (const line of stdout.split(/\r?\n/)) {
+    try {
+      const event = JSON.parse(line);
+      sessionId ??= event.sessionId;
+      if (event.type === 'message' && event.role === 'assistant') answer = (event.content ?? []).filter(part => part.type === 'text').map(part => part.text).join('');
+      if (event.type === 'effect' && typeof event.title === 'string') tools.push(event.title);
+    } catch { /* Preserve raw events even if a line is not JSON. */ }
+  }
+  const detail = cleanVibeError([stderr, exportData.error ? typeof exportData.error === 'string' ? exportData.error : JSON.stringify(exportData.error) : ''].join('\n'));
+  let outcome = 'failed', error;
+  if (timedOut) error = 'vibe runner timed out';
+  else if (code === 0 && exportData.outcome === 'finished') outcome = answer.trim() ? 'done' : 'empty';
+  else if (/missing\s+\w+_API_KEY|--setup|unauthenticated|unauthorized|authentication|not (?:logged|signed) in|invalid api key|\b401\b/i.test(detail)) { outcome = 'signed_out'; error = 'run yourself: vibe --setup'; }
+  else if (/\b429\b|rate[ _-]?limit/i.test(detail)) { outcome = 'rate_limited'; error = detail; }
+  else if (/Unknown model:/i.test(detail)) error = `unknown vibe model ${detail.match(/Unknown model:\s*(.*?)\.\s*Available:/i)?.[1] ?? 'unknown'}; available: ${parseVibeModelIds(detail).join(', ')}`;
+  else if (exportData.outcome === 'turn_limit' || /turn_limit/.test(detail)) error = `stopped at the turn limit (${exportData.limits?.max_turns ?? exportData.steps ?? '?'} turns)`;
+  else if (exportData.outcome === 'time_limit' || /time_limit|time limit/i.test(detail)) error = 'stopped at the time limit';
+  else if (code !== 0 || (exportData.exit_code != null && exportData.exit_code !== 0) || (exportData.outcome && exportData.outcome !== 'finished') || exportData.error) error = detail || `vibe exited ${code}: ${exportData.outcome ?? 'error'}`;
+  else outcome = answer.trim() ? 'done' : 'empty';
+  return { outcome, answer, sessionId, usage: exportData.usage, costUsd: exportData.cost_usd, steps: exportData.steps, denials, tools, error };
+}
+export async function vibeRun(argv, { env = process.env, run = capture, stdout = text => process.stdout.write(text), stderr = text => process.stderr.write(text), tempRoot = os.tmpdir() } = {}) {
+  const opts = CLI('vibe-run <prompt-file> [--cwd DIR] [--model ALIAS] [--read-only] [--max-turns 40] [--timeout 1200] [--resume SESSION] [--events FILE] [--json]', argv,
+    { values: ['cwd', 'model', 'max-turns', 'timeout', 'resume', 'events'], booleans: ['read-only', 'json'] });
+  if (!opts) return 0;
+  if (opts._.length !== 1) throw new Error('Provide one prompt file');
+  const maxTurns = positive(opts['max-turns'] ?? 40, 'maxTurns'), timeout = Number(opts.timeout ?? 1200);
+  if (maxTurns > 200) throw new Error('maxTurns must be between 1 and 200');
+  if (!Number.isFinite(timeout) || timeout <= 0) throw new Error('timeout must be positive seconds');
+  const exe = resolveTool('vibe', { env });
+  if (!exe) { stderr('install yourself from your own terminal: uv tool install mistral-vibe, then vibe --setup\n'); return 1; }
+  const cwd = path.resolve(opts.cwd ?? process.cwd()), exportDir = fs.mkdtempSync(path.join(tempRoot, 'toolkit-vibe-'));
+  try {
+    let raw;
+    try { raw = await run(exe, vibeArgs({ promptFile: path.resolve(opts._[0]), cwd, model: opts.model, readOnly: opts['read-only'], maxTurns, timeout, resume: opts.resume, exportDir }), { env, cwd, input: '', timeout: (timeout + 60) * 1000 }); }
+    catch (error) { raw = { code: 1, stderr: error.message }; }
+    if (opts.events) fs.writeFileSync(path.resolve(opts.events), raw.stdout ?? '');
+    let exportData;
+    try { exportData = JSON.parse(fs.readFileSync(path.join(exportDir, 'export.json'), 'utf8')); } catch { /* Early errors may have no export. */ }
+    const result = classifyVibe({ ...raw, exportData });
+    stdout(opts.json ? JSON.stringify(result) + '\n' : result.answer);
+    if (result.error) stderr(result.error + '\n');
+    if (!opts.json) for (const denial of result.denials) stderr(denial + '\n');
+    return ['done', 'empty'].includes(result.outcome) ? 0 : 1;
+  } finally { fs.rmSync(exportDir, { recursive: true, force: true }); }
+}
 export async function apiRun(argv, { env = process.env, stdout = text => process.stdout.write(text), stderr = text => process.stderr.write(text), ...dependencies } = {}) {
   const opts = CLI(`api-run <prompt-file> [--provider P] [--model M] [--effort ${effortValues('api')}] [--max-tokens N] [--max-cost USD] [--system FILE] [--json] | --free-models [--provider P] [--n N]`, argv,
     { values: ['provider', 'model', 'effort', 'max-tokens', 'max-cost', 'system', 'n', 'response-format', 'timeout'], booleans: ['json', 'free-models', 'local'] });
@@ -222,7 +287,7 @@ export async function agyFan(argv) {
   return failed ? 1 : 0;
 }
 export async function main() {
-  try { const command = process.argv[2], fn = { 'codex-run': codexRun, 'codex-image': codexImage, 'agy-run': agyRun, 'agy-fan': agyFan, 'grok-run': grokRun, 'api-run': apiRun, 'image-api-run': imageApiRun }[command]; if (!fn) throw new Error(`Unknown runner: ${command}`); process.exitCode = await fn(process.argv.slice(3)); }
+  try { const command = process.argv[2], fn = { 'codex-run': codexRun, 'codex-image': codexImage, 'agy-run': agyRun, 'agy-fan': agyFan, 'grok-run': grokRun, 'vibe-run': vibeRun, 'api-run': apiRun, 'image-api-run': imageApiRun }[command]; if (!fn) throw new Error(`Unknown runner: ${command}`); process.exitCode = await fn(process.argv.slice(3)); }
   catch (e) { console.error(e.message); process.exitCode = 1; }
 }
 

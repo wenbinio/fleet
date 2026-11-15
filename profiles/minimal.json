@@ -4,6 +4,7 @@
     "agy": false,
     "grok": false,
     "deepseek": false,
+    "vibe": false,
     "chatgpt": false,
     "api": true,
     "image": false,

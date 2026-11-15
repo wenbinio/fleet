@@ -19,13 +19,17 @@ agy -p "<prompt>" --mode plan --model gemini-4-hydrogen --add-dir <dir> \
 Or use `bin/agy-run`, which does the checks below for you, and `bin/agy-fan` to run several at once.
 
 - `--mode plan` is read-only. Asked to write a file, it only drafts a plan.
-- `agy models` lists the model ids your plan can use. From Google's docs on 2026-11-13 (not yet run on this
-  machine): `gemini-4-hydrogen` (every plan; fleet's default), `gemini-4-argon` (paid Pro and Ultra),
-  `gemini-4-carbon` (Ultra), `gemini-3.8-flash`, `claude-sonnet-5-5`, `claude-opus-5-5`. `claude-sonnet-4-6`,
+- `agy models` lists the model ids your plan can use. On this PC (agy 1.5.9, 2026-11-16): `gemini-4-hydrogen-low|medium|high|xhigh`,
+  `gemini-4-argon-low|medium|high`, `gemini-3.8-flash-low|medium|high`, `claude-opus-5-5-*`, `claude-sonnet-5-5-*`,
+  `gpt-oss-120b-medium`. Google's docs also name `gemini-4-carbon` (Ultra only). `claude-sonnet-4-6`,
   `claude-opus-4-6-thinking` and `gpt-oss-120b-medium` go away on 2026-11-18.
+- `gemini-4-hydrogen` (fleet's default) is accepted although `agy models` lists only the suffixed ids: on
+  2026-11-16 both `gemini-4-hydrogen` and `gemini-4-hydrogen-high` answered a one-line prompt in about 6 s.
 - Thinking level: append it to the id (`gemini-4-hydrogen-xhigh`) or pass `--effort low|medium|high|xhigh`
   (agy 1.2.11 or later). Hydrogen defaults to high. fleet passes the model id through as written, so use the
   suffix form: `fleet:ask agy` with model `gemini-4-argon` or `gemini-4-hydrogen-xhigh`.
+- Argon works through agy (no longer a dead end). Tested 2026-10-31 on a one-line question: Low 11 s, High 115 s;
+  Medium is listed but not run, and its quota is unmeasured. Use it only when Lok asks for Argon.
 - `--output-format json` returns `{conversation_id, status, response, usage, …}`; add `--json-schema '<schema>'`
   and the answer also comes back as `structured_output`.
 - It reads images (`.webp`, `.png`) from an added folder, and it loads a repo's `AGENTS.md` as rules.

@@ -1,6 +1,6 @@
 # Fleet
 
-Version **0.15.2**
+Version **0.16.1**
 
 ## New device, in three steps
 
@@ -67,6 +67,8 @@ disable commands, so its worker restriction uses the inherited environment witho
 Runtime layout: `core/lib/`, `core/bin/`, `core/deepseek/`, `backends/advisor/`, and bundled sound scripts under
 `backends/sound/`. Configured advisor and sound paths remain authoritative. In agent-toolkit, all old `bin/`,
 `lib/`, and advisor launch paths remain compatibility shims; root `setup.mjs` delegates its fleet steps here.
+
+Mistral Vibe is available as `vibe` on Lok's Mistral account: `zai-glm-5-3-flash` by default, or `mistral-medium-3.5`. It edits files without shell; use `readOnly` for audits. Supports resume and four live jobs. Install and sign in yourself with `uv tool install mistral-vibe` then `vibe --setup`. [Recipe](docs/recipes/vibe.md).
 
 ## Review, local inference and browser checks
 

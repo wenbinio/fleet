@@ -1,0 +1,32 @@
+{
+  "outcome": "finished",
+  "stop_reason": null,
+  "error": null,
+  "session_id": "5a42c60a-6125-5630-5196-64ef0cb504f0",
+  "usage": {
+    "input_tokens": 23344,
+    "output_tokens": 226,
+    "cached_input_tokens": 5760,
+    "total_tokens": 23570
+  },
+  "cost_usd": 0,
+  "steps": 3,
+  "warnings": [
+    {
+      "message": "Tool call denied: file_system.write_file (Tool execution denied by approval policy)",
+      "source": "file_system.write_file"
+    }
+  ],
+  "schema_version": 1,
+  "vibe_version": "3.1.2",
+  "journal_dir": "session",
+  "started_at": "2026-11-15T20:34:16.683693Z",
+  "ended_at": "2026-11-15T20:34:28.656270Z",
+  "limits": {
+    "max_turns": 6,
+    "max_price": null,
+    "max_tokens": null,
+    "time_limit_s": null
+  },
+  "exit_code": 0
+}

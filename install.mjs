@@ -137,6 +137,7 @@ export async function inspectBackend(backend, { env, config, run, root, platform
   return { ...await signInStatus(name, { env, run, readAuth }), version };
 }
 const fixes = {
+  vibe: "install yourself from your own terminal: uv tool install mistral-vibe, then vibe --setup",
   codex: "Install Codex from https://developers.openai.com/codex/cli/ ; then codex login",
   image: "Install Codex from https://developers.openai.com/codex/cli/ ; then codex login",
   agy: "Install the Antigravity CLI yourself; then run agy",

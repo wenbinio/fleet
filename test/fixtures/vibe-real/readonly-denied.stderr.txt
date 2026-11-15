@@ -1,0 +1,2 @@
+Reading API keys from the system keyring (set them as environment variables to skip this)
+Tool call denied: file_system.write_file (Tool execution denied by approval policy)

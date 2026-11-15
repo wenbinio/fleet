@@ -5,8 +5,8 @@ import { pathToFileURL } from 'node:url';
 import { spawnWorker as spawn } from "./worker.mjs";
 import { isDeepStrictEqual } from 'node:util';
 
-export const toolNames = ['node', 'git', 'codex', 'agy', 'dsh', 'grok', 'claude', 'gh', 'python', 'ffmpeg', 'chrome', 'gemini'];
-const overrides = { codex: 'CODEX_EXE', agy: 'AGY_EXE', dsh: 'DSH_CMD', grok: 'GROK_EXE', claude: 'CLAUDE_EXE', chrome: 'CHROME_EXE' };
+export const toolNames = ['node', 'git', 'codex', 'agy', 'dsh', 'grok', 'vibe', 'claude', 'gh', 'python', 'ffmpeg', 'chrome', 'gemini'];
+const overrides = { codex: 'CODEX_EXE', agy: 'AGY_EXE', dsh: 'DSH_CMD', grok: 'GROK_EXE', vibe: 'VIBE_EXE', claude: 'CLAUDE_EXE', chrome: 'CHROME_EXE' };
 export const userHome = (env = process.env) => env.HOME || env.USERPROFILE || os.homedir();
 export const toolkitHome = (env = process.env) => env.FLEET_HOME || env.AGENT_TOOLKIT_HOME || path.join(userHome(env), '.agent-toolkit');
 export function readConfig(env = process.env) {
@@ -65,16 +65,33 @@ export function resolveTool(name, { env = process.env, config = loadConfig(env),
   }
   const found = onPath(name, env, platform);
   if (found) return found;
+  if (name === 'vibe') return [path.join(userHome(env), '.local', 'bin', platform === 'win32' ? 'vibe.exe' : 'vibe')].find(isFile) ?? null;
   if (name === 'agy' && local) return [path.join(local, 'agy', 'bin', 'agy.exe')].find(isFile) ?? null;
   if (name === 'grok' && platform === 'win32') return [path.join(env.USERPROFILE || userHome(env), '.grok', 'bin', 'grok.exe')].find(isFile) ?? null;
   if (name === 'claude') return (platform === 'win32' ? ['claude.exe', 'claude'] : ['claude']).map(file => path.join(userHome(env), '.local', 'bin', file)).find(isFile) ?? null;
   return null;
 }
 export async function signInStatus(name, { env = process.env, run = capture, readAuth = file => fs.readFileSync(file, 'utf8') } = {}) {
-  if (!['codex', 'agy', 'dsh', 'grok'].includes(name)) throw new Error(`Unknown backend: ${name}`);
+  if (!['codex', 'agy', 'dsh', 'grok', 'vibe'].includes(name)) throw new Error(`Unknown backend: ${name}`);
   const backend = name === 'dsh' ? 'deepseek' : name;
   const exe = resolveTool(name, { env });
-  if (!exe) return { backend, found: false, signedIn: null, detail: name === 'grok' ? 'install from https://docs.x.ai/build/overview, only with Lok\'s ok' : 'not found; run node setup.mjs' };
+  if (!exe) return { backend, found: false, signedIn: null, detail: name === 'vibe' ? 'install yourself from your own terminal: uv tool install mistral-vibe, then vibe --setup' : name === 'grok' ? 'install from https://docs.x.ai/build/overview, only with Lok\'s ok' : 'not found; run node setup.mjs' };
+  if (name === 'vibe') {
+    if (env.MISTRAL_API_KEY?.trim()) return { backend, found: true, signedIn: true, detail: 'MISTRAL_API_KEY set' };
+    let timer;
+    try {
+      const { vibeProbeArgs, vibeProbeDirectory } = await import('./runners.mjs');
+      const cwd = vibeProbeDirectory();
+      const result = await Promise.race([
+        Promise.resolve().then(() => run(exe, vibeProbeArgs(cwd), { env, cwd, input: '', timeout: 30_000 })),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 30_000); }),
+      ]);
+      const text = (result.stdout ?? '') + '\n' + (result.stderr ?? '');
+      if (/missing\s+\w+_API_KEY|--setup/i.test(text)) return { backend, found: true, signedIn: false, detail: 'run yourself: vibe --setup' };
+      if (/Available:/i.test(text)) return { backend, found: true, signedIn: true, detail: 'signed in (model catalogue reachable)' };
+    } catch {} finally { clearTimeout(timer); }
+    return { backend, found: true, signedIn: null, detail: 'sign-in not confirmed' };
+  }
   if (name === 'dsh') return { backend, found: true, signedIn: null, detail: 'account status is not inspected' };
   if (name === 'grok') {
     if (typeof env.XAI_API_KEY === 'string' && env.XAI_API_KEY.trim()) return { backend, found: true, signedIn: true, detail: 'XAI_API_KEY set' };

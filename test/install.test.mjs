@@ -668,10 +668,14 @@ test("skills preserve local edits and managed blocks insert, replace and remove 
 });
 test("profiles slim schemas, menus, help and refuse disabled starts before launching", async t => {
   const f = fixture(t), full = toolsFor({ env: f.env });
+  assert.ok(full[0].inputSchema.properties.backend.enum.includes("vibe"));
+  assert.equal(readProfile({ env: f.env }).backends.vibe, true);
   await install(parseArgs(["--apply", "--profile", "minimal", "--host", "generic", "--off", "api"]), f.options);
   const slim = toolsFor({ env: f.env });
   assert.ok(JSON.stringify(slim).length < JSON.stringify(full).length);
   assert.deepEqual(slim[0].inputSchema.properties.backend.enum, ["codex"]);
+  assert.equal(readProfile({ env: f.env }).backends.vibe, false);
+  assert.equal(slim[0].inputSchema.properties.maxTurns, undefined);
   for (const key of ["files", "images", "lokAsked", "keepChat", "provider", "maxCostUsd", "seconds"]) assert.equal(slim[0].inputSchema.properties[key], undefined);
   await assert.rejects(startAsk({ backend: "agy", prompt: "hi" }, { env: f.env, spawnJob: () => assert.fail("disabled backend launched") }), /agy is off in profile minimal/);
   await assert.rejects(callTool("fleet_ask", { backend: "sound", prompt: "hi", seconds: 2 }, { env: f.env }), /sound is off in profile minimal/);

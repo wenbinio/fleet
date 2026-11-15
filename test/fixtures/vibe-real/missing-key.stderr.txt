@@ -1,0 +1,2 @@
+Reading API keys from the system keyring (set them as environment variables to skip this)
+Error: Missing DEEPSEEK_API_KEY environment variable for deepseek provider

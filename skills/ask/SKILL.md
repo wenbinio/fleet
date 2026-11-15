@@ -1,6 +1,6 @@
 ---
 name: ask
-description: Run one job on codex, agy, grok, deepseek, chatgpt, api, local, image, sound or advisor — args: backend, then the task — and report the answer honestly.
+description: Run one job on codex, agy, grok, deepseek, vibe, chatgpt, api, local, image, sound or advisor — args: backend, then the task — and report the answer honestly.
 ---
 
 Fleet root: use `${CLAUDE_PLUGIN_ROOT}` in Claude Code; elsewhere use the fleet root in your AGENTS.md fleet block. Set `FLEET_ROOT` to that path for the commands below.
@@ -23,7 +23,8 @@ file outside the target repo and pass `promptFile`. Never ask a worker to run te
   (Hydrogen, fast, on every plan); pass `gemini-4-argon` for a harder question. The runner
   adds the no-shell line ("use only your file-reading tool… never run shell commands"); keep it, because Gemini
   reaches for the shell and gets denied. Point it at folders with `addDirs`/`cwd`. Use `jsonSchema` for
-  structured output. At most 4 agy jobs at once.
+  structured output. At most 4 agy jobs at once. Argon works here too (`gemini-4-argon-low|medium|high`; Low and
+  High tested 2026-10-31), but use it only when Lok asks for Argon.
 - **grok is read-only too.** Its sandbox doesn't work on Windows, so the runner removes its shell and write tools.
   Default model `grok-4.7`. Each call costs tens of thousands of tokens, so ask everything in one prompt. To
   continue a session, pass `resume: <earlier grok runId>`. At most 4 at once.
@@ -33,6 +34,7 @@ file outside the target repo and pass `promptFile`. Never ask a worker to run te
 - **local** is Lok's Qwen 3.8 27B on this machine (`D:\AI\Qwen3.8-Abliterated`): text only, free, nothing
   leaves the PC, so it's the place for private material. About 30–60 s a job; it shares the GPU with sound, so a
   `gpu_busy` refusal means wait. → `docs/recipes/local.md`
+- **vibe** edits `cwd` without shell; `readOnly: true` for audits. Default `zai-glm-5-3-flash`, also `mistral-medium-3.5`; no effort flag. Up to 4 jobs; `maxTurns` 1–200 (default 40), `timeout` seconds (default 1200), `resume: <earlier vibe runId>`. Report `denials` even on `done`; a denied edit did not succeed. See `docs/recipes/vibe.md`.
 - **deepseek** edits `cwd`. Models `deepseek-flash` (default) and `deepseek-v4-pro`.
 - **local** is private text inference on the existing Qwen / llama.cpp server, no key or provider cost.
   Optional effort is low, medium or high. It shares the GPU with sound and sleeps after five idle minutes;
@@ -65,7 +67,7 @@ judgement, quota or media.
 3. The wait output has the answer (its last 6000 chars). Call `fleet_run` only for a longer answer or files. Use `fleet_transcript` only when
    you need to see what the worker did.
 
-To redirect a running job, call `fleet_interrupt` and ask again (codex and grok: `resume`). `fleet_steer` works
+To redirect a running job, call `fleet_interrupt` and ask again (codex, grok and vibe: `resume`). `fleet_steer` works
 only on delegate runs.
 
 ## Report honestly

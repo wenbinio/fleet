@@ -24,6 +24,7 @@ Call `fleet_accounts`. It reports every backend without credentials:
 
 - **codex**: `codex login status`. **agy**: `agy models`. **deepseek**: found or not; its account isn't
   inspectable headless.
+- **vibe**: `MISTRAL_API_KEY` presence or a no-cost unknown-model probe confirms the catalogue; never reads keys. Install from Lok's own terminal with `uv tool install mistral-vibe`, then `vibe --setup`. A redirected APPDATA install can break the uv trampoline: uninstall and reinstall from his terminal. See `docs/recipes/vibe.md`.
 - **grok**: the cached login in `~/.grok/auth.json` (by shape only; `grok models` falsely says "not
   authenticated").
 - **api**: each provider's key status (type, credit left, free requests today) and total spend.
@@ -32,7 +33,7 @@ Call `fleet_accounts`. It reports every backend without credentials:
   Setup configures llama.cpp on port 8088; never import/copy the GGUF into Ollama or download it again.
   Ollama is optional only when explicitly configured. Setup never starts either server.
 
-**Never log in for Lok.** Print the command and let him run it: `codex login`, `agy`, `grok login` (browser), or the
+**Never log in for Lok.** Print the command and let him run it: `codex login`, `agy`, `grok login` (browser), `vibe --setup`, or the
 DeepSeek Harness app. Never read, print or copy a credential file's contents or a key.
 
 ## 3. Codex worker settings (dispatch and delegate)

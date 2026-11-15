@@ -113,7 +113,7 @@ test("effort validation and the MCP string schema share backend rules", async t 
     if (["api", "advisor"].includes(backend)) assert.throws(() => validateAsk({ ...opts, effort: "xhigh" }, { env: f.env }), /invalid effort/);
     assert.ok(ADAPTERS[backend].allowed.includes("effort"));
   }
-  for (const backend of ["agy", "deepseek", "sound"]) assert.throws(() => validateAsk({ backend, prompt: "hello", effort: "high" }, { env: f.env }), /effort.*only/);
+  for (const backend of ["agy", "deepseek", "vibe", "sound"]) assert.throws(() => validateAsk({ backend, prompt: "hello", effort: "high" }, { env: f.env }), /effort.*only/);
   for (const effort of ["low", "", " ", null, false, 1]) assert.throws(
     () => validateAsk({ backend: "chatgpt", prompt: "hello", effort }, { env: f.env }),
     { message: "chatgpt always runs at full power" },
@@ -289,7 +289,7 @@ test("MCP exposes eight concise tools and routes each kind including accounts an
   await assert.rejects(callTool("fleet_steer", { runId: id, text: "continue" }, options), /fleet_ask with resume/);
   assert.equal((await callTool("fleet_interrupt", { runId: id }, options)).value.ok, true);
   assert.ok(fs.existsSync(path.join(directory, "interrupt.flag")));
-  assert.equal((await callTool("fleet_accounts", {}, { ...options, apiOptions: { keyReader: async () => null, fetch: async () => { throw new Error("fake unavailable catalog"); } } })).value.length, 11);
+  assert.equal((await callTool("fleet_accounts", {}, { ...options, apiOptions: { keyReader: async () => null, fetch: async () => { throw new Error("fake unavailable catalog"); } } })).value.length, 12);
   const delegate = path.join(f.dataDir, "runs", "delegate");
   write(path.join(delegate, "state.json"), '{"status":"awaiting-steer","turns":1}');
   write(path.join(delegate, "events.jsonl"), JSON.stringify({ type: "agentMessage", text: "old".repeat(100_000) }) + "\n" + Array.from({ length: 12 }, (_, i) => JSON.stringify({ type: "agentMessage", text: `beat-${i}` })).join("\n"));
@@ -320,7 +320,7 @@ test("MCP exposes eight concise tools and routes each kind including accounts an
   await assert.rejects(callTool("fleet_runs", { limit: -1 }, options), /positive integer/);
 });
 test("adapter table is the single source of backend contracts", () => {
-  assert.deepEqual(Object.keys(ADAPTERS), ["codex", "agy", "deepseek", "grok", "api", "image", "advisor", "chatgpt", "sound", "local"]);
+  assert.deepEqual(Object.keys(ADAPTERS), ["codex", "agy", "deepseek", "grok", "vibe", "api", "image", "advisor", "chatgpt", "sound", "local"]);
   for (const adapter of Object.values(ADAPTERS)) {
     assert.equal(typeof adapter.defaults, "object"); assert.ok(Array.isArray(adapter.allowed));
     for (const operation of ["command", "parse", "transcript"]) assert.equal(typeof adapter[operation], "function");
@@ -330,7 +330,7 @@ test("adapter table is the single source of backend contracts", () => {
   const descriptions = Object.fromEntries(Object.entries(TOOLS[0].inputSchema.properties).filter(([, schema]) => schema.description).map(([name, schema]) => [name, schema.description]));
   assert.deepEqual(descriptions, {
     cwd: "Absolute folder the worker runs in.",
-    timeout: "Seconds; local default 1200, chatgpt 1800.",
+    timeout: "Seconds; local/vibe default 1200, chatgpt 1800.",
     effort: "codex/image: low|medium|high|xhigh; grok: any; api/advisor/local: low|medium|high; not chatgpt.",
     resume: "Earlier runId to continue.",
     system: "System-prompt file path.",
@@ -376,7 +376,7 @@ test("Grok success, denied and resume preserve session and block duplicate live 
   await assert.rejects(reserve(f, { backend: "grok", resume: codex.result.runId }), /earlier grok/);
   for (const key of ["readOnly", "addDirs", "jsonSchema"]) assert.throws(() => validateAsk({ backend: "grok", prompt: "read", [key]: key === "readOnly" ? true : key === "addDirs" ? [] : "{}" }, { env: f.env }), /only/);
 });
-for (const [backend, cap] of [["grok", 4], ["api", 8]]) {
+for (const [backend, cap] of [["grok", 4], ["vibe", 4], ["api", 8]]) {
   test(`${backend} concurrent starts enforce cap ${cap}`, async t => {
     const f = fixture(t);
     const results = await Promise.allSettled(Array.from({ length: cap + 2 }, () => reserve(f, { backend })));
@@ -720,6 +720,7 @@ test("model menu discovers ids, caches no account data, refreshes sign-in and so
   assert.deepEqual(by("codex").models.map(m => [m.id, m.modelId]), [["astra", "gpt-6-astra"], ["sol", "gpt-6.1-sol"], ["luna", "gpt-6-luna"]]);
   assert.deepEqual(by("agy").models.map(m => m.id), ["gemini-4-hydrogen", "claude-sonnet-4-6"]);
   assert.deepEqual(by("grok").models.map(m => m.id), grokModelIds);
+  assert.deepEqual(by("vibe").models.map(m => m.id), ["zai-glm-5-3-flash", "mistral-medium-3.5"]);
   assert.deepEqual(by("sound").models.map(m => m.id), ["sao", "moss"]);
   assert.equal(by("api").models.length, 3); assert.match(by("api").notes.join(" "), /catalogue size: 4/); assert.ok(!by("api").models.some(m => m.id.includes("paid")));
   assert.equal(by("advisor").signedIn, null); assert.match(by("advisor").notes[0], /only when Lok asks/);
@@ -730,11 +731,11 @@ test("model menu discovers ids, caches no account data, refreshes sign-in and so
   write(path.join(f.dataDir, "model-menu.json"), JSON.stringify(oldMenu));
   f.env.FAKE_SIGNED_OUT = "1";
   const filtered = await accounts({ ...options, backend: "codex", now: () => 2000 });
-  assert.equal(filtered.length, 1); assert.equal(filtered[0].signedIn, false); assert.equal(discoveries.length, 2);
+  assert.equal(filtered.length, 1); assert.equal(filtered[0].signedIn, false); assert.equal(discoveries.length, 3);
   assert.ok(filtered[0].notes.includes(effortNote("codex"))); assert.ok(!filtered[0].notes.includes("effort: stale rule"));
   fs.unlinkSync(path.join(f.root, "sao", "finish.py"));
   assert.equal((await accounts({ ...options, backend: "sound" }))[0].models.length, 0);
-  await accounts({ ...options, now: () => 601_001 }); assert.equal(discoveries.length, 4);
+  await accounts({ ...options, now: () => 601_001 }); assert.equal(discoveries.length, 6);
   assert.ok(requests.some(url => url.endsWith("/key")));
   assert.ok(!JSON.stringify(rows).includes(f.env.FAKE_PROVIDER_KEY));
   assert.deepEqual(parseModelIds('Not authenticated\n{"models":[{"id":"grok-4.7"}]}\ngrok-4.7'), ["grok-4.7"]);

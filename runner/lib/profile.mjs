@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { dataPaths } from "./data-dir.mjs";
 
-export const BACKEND_NAMES = ["codex", "agy", "deepseek", "grok", "api", "image", "advisor", "chatgpt", "sound", "local"];
+export const BACKEND_NAMES = ["codex", "agy", "deepseek", "grok", "vibe", "api", "image", "advisor", "chatgpt", "sound", "local"];
 export const PROFILE_ROOT = fileURLToPath(new URL("../../profiles/", import.meta.url));
 export const AUTO_APPROVE_POLICIES = Object.freeze(["none", "read-only"]);
 export function readProfile({ env = process.env, name, overrides = {} } = {}) {

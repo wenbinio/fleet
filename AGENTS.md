@@ -1,7 +1,7 @@
 # fleet — guide for agents
 
 fleet is one MCP server (plus skills and an AGENTS.md rules block) that runs Lok's models: codex, agy, grok,
-deepseek, chatgpt (web), api (OpenRouter), local (Qwen / llama.cpp), image, advisor (Gemini web, Argon), sound. It plugs into any harness;
+deepseek, vibe (Mistral Vibe; file edits, no shell, readOnly for audits), chatgpt (web), api (OpenRouter), local (Qwen / llama.cpp), image, advisor (Gemini web, Argon), sound. It plugs into any harness;
 Claude Code gets the most (hooks, subagents, background notices).
 
 ## Set it up, slim it down, move it
@@ -16,7 +16,7 @@ node install.mjs --apply --profile minimal  # codex + api only
 
 - **You may do** every `auto` step without asking. Rerun `--apply` until a plan shows only `done` and `needs-you`.
 - **Hand `needs-you` items to Lok** in one short list, each with its command: logins (`codex login`, `agy`,
-  `grok login`, the DeepSeek Harness app, `node core/lib/webchat/chatgpt.mjs login`, `node backends/advisor/advisor.mjs login`), keys
+  `grok login`, `vibe --setup`, the DeepSeek Harness app, `node core/lib/webchat/chatgpt.mjs login`, `node backends/advisor/advisor.mjs login`), keys
   (`node install.mjs --set-key openrouter`, typed by him in a hidden prompt), remote installers, sound downloads
   (`--with sound`, several GB), PATH changes. Never do these yourself, never read or print credentials.
 - A backend that isn't found or isn't signed in usually means a lapsed subscription: suggest `--off <backend>`.

@@ -11,17 +11,18 @@ Arguments: the targets, written `backend[:model]`, for example `agy:gemini-4-hyd
 api:free api:free api:free`. With no targets, use three free api models from different vendors:
 `node "${FLEET_ROOT}/runner/fleet.mjs" models --free --n 3`.
 
-1. Write one grounded, **read-only** prompt. Every target gets the same prompt. Codex targets get
+1. Write one grounded, **read-only** prompt. Every target gets the same prompt. Codex and vibe targets get
    `readOnly: true`. agy and grok are read-only by design and must never be asked for code. api targets see only
    the prompt text, so put the material into it.
    - Free api models may log or train on what they get. **Never fan private material** (client work, school
      documents, unreleased work) to them.
    - A paid api model needs its exact id, `maxCostUsd` and a reason.
    - `local` keeps text on the existing Qwen / llama.cpp server and shares the GPU with sound; one local job at a time.
-2. Call `fleet_ask` once per target. agy and grok allow 4 live jobs each, and api allows 8; `fleet_ask` refuses
+2. Call `fleet_ask` once per target. agy, grok and vibe allow 4 live jobs each, and api allows 8; `fleet_ask` refuses
    more than that.
 3. Start one background `wait` with every runId (`node "${FLEET_ROOT}/runner/fleet.mjs" wait <id1> <id2> …`).
    Don't poll. It exits 1 if any target failed; the output still has every answer and error.
+   Vibe defaults to `zai-glm-5-3-flash`; report tool denials even when the run is `done`.
 4. Read the answers from the wait output; `fleet_run` only for one that was trimmed.
 
 ## Synthesize
